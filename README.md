@@ -19,17 +19,32 @@ lambda/hello.js         Lambda handler code (plain JS, no dependencies)
 
 | Service     | Name                   | Description                                          |
 | ----------- | ---------------------- | ---------------------------------------------------- |
-| Lambda      | `dealverse-lambda`       | Node.js 24 function: hello + save/get config         |
+| Lambda      | `dealverse-lambda`       | Node.js 24: serves the React app + affiliate API     |
 | API Gateway | `dealverse-apigateway`   | Proxy REST API that triggers the Lambda              |
-| DynamoDB    | `dealverse-dynamodb`     | Stores a single "latest" config record (overwritten) |
+| DynamoDB    | `dealverse-dynamodb`     | Stores the Amazon SiteStripe session config          |
+
+The single Lambda serves both the React frontend (baked into the asset) and the
+backend API. Amazon-only affiliate generation, modelled on the reference project
+(`D:\projects\dealverse\auto deal`).
+
+## Panels
+
+- **User panel** (default): paste an amazon.in product link → get an affiliate link.
+- **Admin panel** (password `abc`): paste the SiteStripe `getShortUrl` cURL to save the session.
 
 ## API
 
-| Method | Path       | Body                | Description                          |
-| ------ | ---------- | ------------------- | ------------------------------------ |
-| GET    | `/`        | –                   | Hello World health check             |
-| POST   | `/config`  | `{ "curl": "..." }` | Save (overwrite) the config          |
-| GET    | `/config`  | –                   | Read the saved config                |
+| Method | Path                             | Auth   | Body               | Description                              |
+| ------ | -------------------------------- | ------ | ------------------ | ---------------------------------------- |
+| GET    | `/hello`                         | –      | –                  | Health check                             |
+| POST   | `/api/admin/login`               | –      | `{ secret }`       | Login; returns `{ token }` (base64 pw)   |
+| GET    | `/api/admin/amazon/sitestripe`   | Bearer | –                  | Masked status of the saved session       |
+| POST   | `/api/admin/amazon/sitestripe`   | Bearer | `{ curl }`         | Parse + save the SiteStripe session      |
+| GET    | `/api/affiliate/status`          | –      | –                  | Whether a session is configured          |
+| POST   | `/api/affiliate/generate-link`   | –      | `{ url }`          | amazon.in link → affiliate short link    |
+
+Admin auth: `Authorization: Bearer base64(password)` (password hardcoded `abc`,
+overridable via the `ADMIN_SECRET` Lambda env var).
 
 ## Commands
 

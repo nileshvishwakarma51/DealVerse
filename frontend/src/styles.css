@@ -13,7 +13,7 @@ body {
   color: #e6e8eb;
   display: flex;
   justify-content: center;
-  padding: 48px 16px;
+  padding: 40px 16px;
 }
 
 .app {
@@ -21,33 +21,60 @@ body {
   max-width: 720px;
 }
 
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
 h1 {
-  font-size: 1.5rem;
+  font-size: 1.4rem;
+  margin: 0;
+}
+
+h2 {
+  font-size: 1.1rem;
   margin: 0 0 4px;
 }
 
 .subtitle {
   color: #9aa2ad;
-  margin: 0 0 24px;
-  font-size: 0.9rem;
+  margin: 0 0 20px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.card {
+  background: #161a21;
+  border: 1px solid #232833;
+  border-radius: 12px;
+  padding: 24px;
 }
 
 label {
   display: block;
   font-weight: 600;
   margin-bottom: 8px;
+  font-size: 0.85rem;
 }
 
+input[type='text'],
+input[type='password'],
 textarea {
   width: 100%;
-  min-height: 200px;
   padding: 12px;
   border-radius: 8px;
   border: 1px solid #2a2f3a;
-  background: #161a21;
+  background: #0f1319;
   color: #e6e8eb;
+  font-size: 0.9rem;
+}
+
+textarea {
+  min-height: 180px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   resize: vertical;
 }
 
@@ -56,6 +83,7 @@ textarea {
   align-items: center;
   gap: 12px;
   margin-top: 16px;
+  flex-wrap: wrap;
 }
 
 button {
@@ -67,6 +95,17 @@ button {
   font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
+}
+
+button.secondary {
+  background: #2a2f3a;
+}
+
+button.link {
+  background: none;
+  color: #9aa2ad;
+  padding: 6px 10px;
+  font-weight: 500;
 }
 
 button:disabled {
@@ -84,10 +123,70 @@ button:disabled {
 
 .status.err {
   color: #f87171;
+  margin-top: 12px;
 }
 
 .meta {
-  margin-top: 24px;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   color: #9aa2ad;
+  margin: 4px 0 0;
+}
+
+.result {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #232833;
+}
+
+.affiliate {
+  color: #60a5fa;
+  word-break: break-all;
+  font-size: 0.85rem;
+  flex: 1;
+}
+
+.statusbox {
+  background: #0f1319;
+  border: 1px solid #232833;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 20px;
+  font-size: 0.85rem;
+}
+
+code {
+  background: #0f1319;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+.toggle {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  margin: 0;
+  cursor: pointer;
+}
+
+.opt input {
+  width: auto;
+  margin: 0;
+}
+
+.opt .meta {
+  margin: 0;
+}
+
+.divider {
+  border: 0;
+  border-top: 1px solid #232833;
+  margin: 28px 0 24px;
 }
