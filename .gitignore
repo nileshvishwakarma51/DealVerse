@@ -1,0 +1,15 @@
+node_modules/
+cdk.out/
+
+# CDK / TS build artifacts (scoped — do NOT use a blanket *.js rule)
+*.d.ts
+bin/*.js
+lib/*.js
+*.js.map
+
+# CDK local
+.cdk.staging/
+cdk.context.json
+
+# OS / editor
+.DS_Store
