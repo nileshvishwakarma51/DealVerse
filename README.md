@@ -17,9 +17,19 @@ lambda/hello.js         Lambda handler code (plain JS, no dependencies)
 
 ## Current resources
 
-| Service | Name             | Description                          |
-| ------- | ---------------- | ------------------------------------ |
-| Lambda  | `dealverse-lambda` | Node.js 24 hello-world function      |
+| Service     | Name                   | Description                                          |
+| ----------- | ---------------------- | ---------------------------------------------------- |
+| Lambda      | `dealverse-lambda`       | Node.js 24 function: hello + save/get config         |
+| API Gateway | `dealverse-apigateway`   | Proxy REST API that triggers the Lambda              |
+| DynamoDB    | `dealverse-dynamodb`     | Stores a single "latest" config record (overwritten) |
+
+## API
+
+| Method | Path       | Body                | Description                          |
+| ------ | ---------- | ------------------- | ------------------------------------ |
+| GET    | `/`        | –                   | Hello World health check             |
+| POST   | `/config`  | `{ "curl": "..." }` | Save (overwrite) the config          |
+| GET    | `/config`  | –                   | Read the saved config                |
 
 ## Commands
 
