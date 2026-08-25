@@ -253,3 +253,17 @@ code {
 .modal-head h2 {
   margin: 0;
 }
+
+.msgcard {
+  border: 1px solid #232833;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.msgtext {
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  margin-bottom: 8px;
+  color: #cbd2da;
+}

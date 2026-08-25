@@ -69,6 +69,26 @@ configured channel.
 Webhook requests are verified against a random `secret_token` set at
 registration (`X-Telegram-Bot-Api-Secret-Token`).
 
+## Listener channels (public, no login)
+
+Reads **public** channels via the `t.me/s/<username>` web preview — no login,
+no api_id/api_hash, no dependency. Add a listener, then fetch the last 10/20
+messages; each Amazon link is resolved and re-generated as a **fresh** affiliate
+link (existing affiliate params stripped), which you can publish to your bot's
+channel(s).
+
+| Method | Path                              | Auth   | Description                                   |
+| ------ | --------------------------------- | ------ | --------------------------------------------- |
+| GET    | `/api/admin/listener`             | Bearer | List listener channels                        |
+| POST   | `/api/admin/listener/test`        | Bearer | Test-read a channel (last 5)                   |
+| POST   | `/api/admin/listener/add`         | Bearer | Add a listener channel                         |
+| POST   | `/api/admin/listener/remove`      | Bearer | Remove a listener channel                      |
+| POST   | `/api/admin/listener/messages`    | Bearer | Last N (≤20) messages + fresh affiliate links  |
+| POST   | `/api/admin/listener/publish`     | Bearer | Publish a message to the bot's channels        |
+
+Private channels (needing a Telegram user account / MTProto) are not supported
+by this approach — only public channels with a `@username`.
+
 ## Commands
 
 ```bash

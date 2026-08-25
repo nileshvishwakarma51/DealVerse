@@ -217,6 +217,7 @@ function AdminPanel({ token, onUnauthorized }) {
     <>
       <AmazonConfig authFetch={authFetch} />
       <TelegramConfig authFetch={authFetch} />
+      <ListenerConfig authFetch={authFetch} />
     </>
   );
 }
@@ -641,6 +642,203 @@ function ChannelModal({ authFetch, onClose, onSaved }) {
           </div>
         </>
       )}
+    </Modal>
+  );
+}
+
+/* ─────────────────────────── Listener channels ─────────────────────────── */
+
+function ListenerConfig({ authFetch }) {
+  const [listeners, setListeners] = useState([]);
+  const [showAdd, setShowAdd] = useState(false);
+  const [msgFor, setMsgFor] = useState(null); // { username, limit }
+
+  async function load() {
+    const res = await authFetch('api/admin/listener');
+    const data = await res.json();
+    setListeners(data.listeners || []);
+  }
+  useEffect(() => {
+    load().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function remove(username) {
+    await authFetch('api/admin/listener/remove', { method: 'POST', body: JSON.stringify({ username }) });
+    load();
+  }
+
+  return (
+    <div className="card">
+      <h2>Listener channels</h2>
+      <p className="subtitle">
+        Read public channels (no login) and re-publish their Amazon deals with your affiliate link.
+      </p>
+
+      {listeners.length === 0 && <p className="meta">No listener channels yet.</p>}
+      {listeners.map((c) => (
+        <div key={c.username} className="listrow">
+          <span>{c.title} <span className="meta">(@{c.username})</span></span>
+          <span>
+            <button className="link" onClick={() => setMsgFor({ username: c.username, limit: 10 })}>last 10</button>
+            <button className="link" onClick={() => setMsgFor({ username: c.username, limit: 20 })}>last 20</button>
+            <button className="link" onClick={() => remove(c.username)}>remove</button>
+          </span>
+        </div>
+      ))}
+
+      <div className="row">
+        <button className="secondary" onClick={() => setShowAdd(true)}>Add listener</button>
+      </div>
+
+      {showAdd && (
+        <AddListenerModal
+          authFetch={authFetch}
+          onClose={() => setShowAdd(false)}
+          onSaved={() => { setShowAdd(false); load(); }}
+        />
+      )}
+      {msgFor && (
+        <ListenerMessagesModal
+          authFetch={authFetch}
+          channel={msgFor.username}
+          limit={msgFor.limit}
+          onClose={() => setMsgFor(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function AddListenerModal({ authFetch, onClose, onSaved }) {
+  const [channel, setChannel] = useState('');
+  const [title, setTitle] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [preview, setPreview] = useState(null); // { username, messages }
+
+  async function test() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await authFetch('api/admin/listener/test', { method: 'POST', body: JSON.stringify({ channel }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Could not read channel.');
+      setPreview(data);
+      if (!title) setTitle(data.username);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await authFetch('api/admin/listener/add', { method: 'POST', body: JSON.stringify({ channel, title }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Save failed.');
+      onSaved();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="Add listener channel" onClose={onClose}>
+      <p className="subtitle">Enter a public channel (@username or t.me link), then test-read it.</p>
+      <label htmlFor="ch">Channel</label>
+      <input id="ch" type="text" value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="https://t.me/FLTlooters or @FLTlooters" />
+      <div className="row">
+        <button className="secondary" onClick={test} disabled={busy || channel.trim() === ''}>{busy ? 'Reading…' : 'Test read'}</button>
+      </div>
+      {error && <p className="status err">{error}</p>}
+
+      {preview && (
+        <>
+          <div className="statusbox">
+            <div><strong>@{preview.username}</strong> — last {preview.messages.length} messages</div>
+            {preview.messages.map((m) => (
+              <div key={m.id} className="meta" style={{ marginTop: 6 }}>• {m.text.slice(0, 90) || '(no text)'}</div>
+            ))}
+          </div>
+          <label htmlFor="lt">Title</label>
+          <input id="lt" type="text" value={title} onChange={(e) => setTitle(e.target.value)} />
+          <div className="row">
+            <button onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save listener'}</button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+function ListenerMessagesModal({ authFetch, channel, limit, onClose }) {
+  const [loading, setLoading] = useState(true);
+  const [messages, setMessages] = useState([]);
+  const [error, setError] = useState(null);
+  const [sent, setSent] = useState({}); // id -> 'sending' | 'ok' | error string
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await authFetch('api/admin/listener/messages', { method: 'POST', body: JSON.stringify({ channel, limit }) });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Could not read messages.');
+        if (alive) setMessages(data.messages || []);
+      } catch (err) {
+        if (alive) setError(err.message);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [authFetch, channel, limit]);
+
+  async function sendToChannel(msg) {
+    const affUrl = msg.affiliate && msg.affiliate.affiliateUrl;
+    if (!affUrl) return;
+    const text = msg.sourceUrl ? msg.text.replace(msg.sourceUrl, affUrl) : `${msg.text}\n${affUrl}`;
+    setSent((s) => ({ ...s, [msg.id]: 'sending' }));
+    try {
+      const res = await authFetch('api/admin/listener/publish', { method: 'POST', body: JSON.stringify({ text }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Publish failed.');
+      setSent((s) => ({ ...s, [msg.id]: 'ok' }));
+    } catch (err) {
+      setSent((s) => ({ ...s, [msg.id]: err.message }));
+    }
+  }
+
+  return (
+    <Modal title={`@${channel} — last ${limit}`} onClose={onClose}>
+      {loading && <p className="meta">Reading messages and generating affiliate links…</p>}
+      {error && <p className="status err">{error}</p>}
+      {!loading && messages.map((m) => (
+        <div key={m.id} className="msgcard">
+          <div className="msgtext">{m.text || '(no text)'}</div>
+          {m.affiliate && m.affiliate.affiliateUrl && (
+            <a className="affiliate" href={m.affiliate.affiliateUrl} target="_blank" rel="noreferrer">{m.affiliate.affiliateUrl}</a>
+          )}
+          {m.affiliate && m.affiliate.error && <div className="status err">{m.affiliate.error}</div>}
+          {!m.sourceUrl && <div className="meta">No Amazon link in this message.</div>}
+          {m.affiliate && m.affiliate.affiliateUrl && (
+            <div className="row">
+              <button className="secondary" onClick={() => sendToChannel(m)} disabled={sent[m.id] === 'sending' || sent[m.id] === 'ok'}>
+                {sent[m.id] === 'ok' ? 'Sent ✅' : sent[m.id] === 'sending' ? 'Sending…' : 'Send to channel'}
+              </button>
+              {typeof sent[m.id] === 'string' && sent[m.id] !== 'ok' && sent[m.id] !== 'sending' && (
+                <span className="status err">{sent[m.id]}</span>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
     </Modal>
   );
 }

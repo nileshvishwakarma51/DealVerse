@@ -25,6 +25,14 @@ const {
   maskTelegram,
   formatAffiliateMessage,
 } = require('./lib/telegram');
+const {
+  parseUsername,
+  fetchMessages,
+  fetchEnriched,
+  getListeners,
+  addListener,
+  removeListener,
+} = require('./lib/listener');
 
 // ── Static React build (copied into lambda/public at build time) ────────────
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -233,6 +241,62 @@ exports.handler = async (event) => {
       const { id } = parseBody(event);
       const cfg = await removeChannel(id);
       return respond(200, { success: true, telegram: maskTelegram(cfg) });
+    }
+
+    // ── Admin: list listener channels (protected) ────────────────────────
+    if (method === 'GET' && reqPath.endsWith('/api/admin/listener')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      return respond(200, { success: true, listeners: await getListeners() });
+    }
+
+    // ── Admin: test-read a public channel (last 5) (protected) ────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/listener/test')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { channel } = parseBody(event);
+      const username = parseUsername(channel);
+      const messages = await fetchMessages(username, 5);
+      return respond(200, { success: true, username, messages });
+    }
+
+    // ── Admin: add a listener channel (protected) ─────────────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/listener/add')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { channel, title } = parseBody(event);
+      const username = parseUsername(channel);
+      const listeners = await addListener(username, title);
+      return respond(200, { success: true, listeners });
+    }
+
+    // ── Admin: remove a listener channel (protected) ──────────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/listener/remove')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { username } = parseBody(event);
+      const listeners = await removeListener(username);
+      return respond(200, { success: true, listeners });
+    }
+
+    // ── Admin: read last N messages + fresh affiliate links (protected) ───
+    if (method === 'POST' && reqPath.endsWith('/api/admin/listener/messages')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { channel, limit } = parseBody(event);
+      const username = parseUsername(channel);
+      const n = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 20);
+      const messages = await fetchEnriched(username, n);
+      return respond(200, { success: true, username, messages });
+    }
+
+    // ── Admin: publish a message to the bot's channels (protected) ────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/listener/publish')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { text } = parseBody(event);
+      if (typeof text !== 'string' || text.trim() === '') {
+        return respond(400, { success: false, error: 'Nothing to publish.' });
+      }
+      const sent = await publishToChannels(text);
+      if (sent === 0) {
+        return respond(400, { success: false, error: 'No channel configured. Add a bot channel first.' });
+      }
+      return respond(200, { success: true, sent });
     }
 
     // ── Telegram webhook (public; verified by secret header) ──────────────
