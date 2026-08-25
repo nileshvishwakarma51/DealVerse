@@ -38,6 +38,8 @@ export class DealverseStack extends Stack {
       proxy: true,
       restApiName: 'dealverse-apigateway',
       description: 'API Gateway that triggers dealverse-lambda.',
+      // Allow the Lambda to serve image assets (logo/favicon) as binary.
+      binaryMediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/x-icon'],
     });
 
     new CfnOutput(this, 'HelloFunctionName', {

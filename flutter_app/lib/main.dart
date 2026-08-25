@@ -63,7 +63,6 @@ class _WebShellPageState extends State<WebShellPage> {
   bool _loading = true;
   bool _hasError = false;
   int _progress = 0;
-  bool _isAdmin = false;
 
   @override
   void initState() {
@@ -77,16 +76,8 @@ class _WebShellPageState extends State<WebShellPage> {
           onPageStarted: (url) => setState(() {
             _loading = true;
             _hasError = false;
-            _isAdmin = isAdminUrl(url);
           }),
-          onPageFinished: (url) => setState(() {
-            _loading = false;
-            _isAdmin = isAdminUrl(url);
-          }),
-          onUrlChange: (change) {
-            final url = change.url;
-            if (url != null) setState(() => _isAdmin = isAdminUrl(url));
-          },
+          onPageFinished: (url) => setState(() => _loading = false),
           onWebResourceError: (error) {
             // Only surface full-page failures, not sub-resource hiccups.
             if (error.isForMainFrame ?? true) {
@@ -121,9 +112,6 @@ class _WebShellPageState extends State<WebShellPage> {
     }
   }
 
-  void _goToAdmin() => _controller.loadRequest(Uri.parse(kAdminUrl));
-  void _goToUser() => _controller.loadRequest(Uri.parse(kHomeUrl));
-
   void _retry() {
     setState(() {
       _hasError = false;
@@ -144,39 +132,27 @@ class _WebShellPageState extends State<WebShellPage> {
 
   @override
   Widget build(BuildContext context) {
+    // No app bar: the deployed web app has its own header (with logo and the
+    // Admin/User toggle), so a native one would duplicate the Admin button.
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: _handleBack,
       child: Scaffold(
-        appBar: AppBar(
-          title: const Text('DealVerse'),
-          actions: [
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: _isAdmin
-                  ? TextButton.icon(
-                      onPressed: _goToUser,
-                      icon: const Icon(Icons.person_outline),
-                      label: const Text('User'),
-                    )
-                  : TextButton.icon(
-                      onPressed: _goToAdmin,
-                      icon: const Icon(Icons.admin_panel_settings_outlined),
-                      label: const Text('Admin'),
-                    ),
-            ),
-          ],
-          bottom: _loading
-              ? PreferredSize(
-                  preferredSize: const Size.fromHeight(3),
-                  child: LinearProgressIndicator(
-                    value: _progress > 0 && _progress < 100 ? _progress / 100 : null,
-                    minHeight: 3,
-                  ),
-                )
-              : null,
+        backgroundColor: const Color(0xFF0F1115),
+        body: SafeArea(
+          child: _hasError
+              ? _errorView()
+              : Stack(
+                  children: [
+                    WebViewWidget(controller: _controller),
+                    if (_loading)
+                      LinearProgressIndicator(
+                        value: _progress > 0 && _progress < 100 ? _progress / 100 : null,
+                        minHeight: 3,
+                      ),
+                  ],
+                ),
         ),
-        body: _hasError ? _errorView() : WebViewWidget(controller: _controller),
       ),
     );
   }

@@ -48,7 +48,16 @@ const MIME = {
   '.ico': 'image/x-icon',
   '.txt': 'text/plain; charset=utf-8',
   '.map': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
 };
+
+// Extensions returned as base64 (binary) — API Gateway has these in
+// binaryMediaTypes, so it decodes them back to bytes for the client.
+const BINARY_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.ico']);
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -79,6 +88,14 @@ function serveStatic(reqPath) {
     return { statusCode: 404, headers: { ...CORS }, body: 'Not found' };
   }
   const ext = path.extname(filePath).toLowerCase();
+  if (BINARY_EXT.has(ext)) {
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': MIME[ext] || 'application/octet-stream', ...CORS },
+      body: fs.readFileSync(filePath).toString('base64'),
+      isBase64Encoded: true,
+    };
+  }
   return {
     statusCode: 200,
     headers: { 'Content-Type': MIME[ext] || 'application/octet-stream', ...CORS },

@@ -52,7 +52,10 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <h1 onClick={goHome} style={{ cursor: 'pointer' }}>DealVerse</h1>
+        <div className="brand" onClick={goHome} style={{ cursor: 'pointer' }}>
+          <img src={new URL('dealverse.png', document.baseURI).toString()} alt="DealVerse" className="brand-logo" />
+          <h1>DealVerse</h1>
+        </div>
         {view === 'admin' ? (
           <button className="link" onClick={logout}>Log out</button>
         ) : (

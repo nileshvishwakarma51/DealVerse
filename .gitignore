@@ -19,7 +19,6 @@ lambda/public/
 # OS / editor
 .DS_Store
 
-# Local screenshots
-*.PNG
-*.png
+# Local screenshots (but keep brand assets like dealverse.png)
 Capture*.PNG
+Capture*.png
