@@ -269,8 +269,9 @@ function AutomationConfig({ authFetch }) {
   return (
     <>
       <p className="subtitle">
-        Each listener runs on its own schedule (set “auto” + interval + count on the listener). This
-        runs a check every 5 minutes and posts new deals to your auto-post channels. Runs never overlap.
+        Each listener posts on its <strong>own interval</strong> (set “Auto” + interval + count on the
+        listener above). A background checker wakes every ~5 minutes and runs only the listeners whose
+        interval is due — so a 30-min listener posts every 30 min, not every 5. Runs never overlap.
       </p>
       <div className="row">
         <button className="secondary" onClick={runNow} disabled={running}>{running ? 'Running…' : 'Run all now'}</button>
