@@ -363,13 +363,36 @@ code {
 }
 
 .listener-card {
-  border-bottom: 1px solid #232833;
-  padding-bottom: 10px;
-  margin-bottom: 6px;
+  border: 1px solid #232833;
+  border-radius: 8px;
+  margin-bottom: 10px;
+  background: #12161d;
 }
 
-.listener-card .listrow {
-  border-bottom: 0;
+.listener-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.listener-body {
+  padding: 0 14px 12px;
+}
+
+.sub {
+  border-top: 1px solid #232833;
+  padding: 12px 0;
+}
+
+.sub-title {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #9aa2ad;
+  font-weight: 600;
 }
 
 .auto-row {
@@ -377,9 +400,13 @@ code {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 8px;
-  padding: 4px 0 2px;
+  margin-top: 10px;
 }
 
 .auto-row .num {
   width: 52px;
+}
+
+.link.danger {
+  color: #f87171;
 }

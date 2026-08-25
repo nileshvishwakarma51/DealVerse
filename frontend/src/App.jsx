@@ -807,6 +807,7 @@ function ListenerConfig({ authFetch }) {
 }
 
 function ListenerRow({ channel, onOpen, onRemove, onSaveAutomation }) {
+  const [open, setOpen] = useState(false);
   const [custom, setCustom] = useState(10);
   const [auto, setAuto] = useState(!!channel.auto);
   const [intervalMin, setIntervalMin] = useState(channel.intervalMinutes ?? 60);
@@ -821,31 +822,54 @@ function ListenerRow({ channel, onOpen, onRemove, onSaveAutomation }) {
 
   return (
     <div className="listener-card">
-      <div className="listrow">
-        <span>{channel.title} <span className="meta">(@{channel.username})</span></span>
-        <span className="rowactions">
-          <button className="link" onClick={() => onOpen(10)}>last 10</button>
-          <button className="link" onClick={() => onOpen(20)}>last 20</button>
-          <input className="num" type="number" min="1" max="30" value={custom}
-            onChange={(e) => setCustom(e.target.value)} title="custom count" />
-          <button className="link" onClick={() => onOpen(Math.min(Math.max(parseInt(custom, 10) || 1, 1), 30))}>fetch</button>
-          <button className="link" onClick={onRemove}>remove</button>
-        </span>
+      <div className="listener-head" onClick={() => setOpen((o) => !o)}>
+        <div>
+          <strong>{channel.title}</strong> <span className="meta">@{channel.username}</span>
+          <div className="meta">
+            {auto ? `auto · every ${intervalMin || 0} min · ${count} msgs` : 'auto off'}
+          </div>
+        </div>
+        <span className="chev">{open ? '▲' : '▼'}</span>
       </div>
 
-      <div className="auto-row">
-        <label className="opt" style={{ fontWeight: 500 }}>
-          <input type="checkbox" checked={auto} onChange={(e) => { setAuto(e.target.checked); saveAuto({ auto: e.target.checked }); }} />
-          <span>Auto</span>
-        </label>
-        <span className="meta">every</span>
-        <input className="num" type="number" min="0" max="1440" value={intervalMin} onChange={(e) => setIntervalMin(e.target.value)} />
-        <span className="meta">min · latest</span>
-        <input className="num" type="number" min="1" max="20" value={count} onChange={(e) => setCount(e.target.value)} />
-        <span className="meta">msgs</span>
-        <button className="link" onClick={() => saveAuto({ intervalMinutes: Number(intervalMin), count: Number(count) })}>save</button>
-        {saved && <span className="status ok" style={{ fontSize: '0.75rem' }}>✓</span>}
-      </div>
+      {open && (
+        <div className="listener-body">
+          <div className="sub">
+            <div className="sub-title">Manual fetch</div>
+            <div className="row" style={{ marginTop: 8 }}>
+              <button className="secondary" onClick={() => onOpen(10)}>Last 10</button>
+              <button className="secondary" onClick={() => onOpen(20)}>Last 20</button>
+              <input className="num" type="number" min="1" max="30" value={custom}
+                onChange={(e) => setCustom(e.target.value)} title="custom count" />
+              <button className="secondary" onClick={() => onOpen(Math.min(Math.max(parseInt(custom, 10) || 1, 1), 30))}>Fetch</button>
+            </div>
+          </div>
+
+          <div className="sub">
+            <div className="sub-title">Automation</div>
+            <label className="opt" style={{ fontWeight: 500, marginTop: 8 }}>
+              <input type="checkbox" checked={auto} onChange={(e) => { setAuto(e.target.checked); setSaved(false); }} />
+              <span>Auto-post new deals from this channel</span>
+            </label>
+            <div className="auto-row">
+              <span className="meta">every</span>
+              <input className="num" type="number" min="0" max="1440" value={intervalMin} onChange={(e) => { setIntervalMin(e.target.value); setSaved(false); }} />
+              <span className="meta">min · latest</span>
+              <input className="num" type="number" min="1" max="20" value={count} onChange={(e) => { setCount(e.target.value); setSaved(false); }} />
+              <span className="meta">msgs</span>
+            </div>
+            <p className="meta">Interval 0 = every check (~5 min).</p>
+            <div className="row">
+              <button onClick={() => saveAuto({ auto, intervalMinutes: Number(intervalMin), count: Number(count) })}>Save automation</button>
+              {saved && <span className="status ok">✓ saved</span>}
+            </div>
+          </div>
+
+          <div className="row">
+            <button className="link danger" onClick={onRemove}>Remove channel</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
