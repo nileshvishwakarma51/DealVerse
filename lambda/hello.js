@@ -91,19 +91,30 @@ function serveStatic(reqPath) {
     return { statusCode: 404, headers: { ...CORS }, body: 'Not found' };
   }
   const ext = path.extname(filePath).toLowerCase();
+
+  // Cache-Control: hashed assets + images can be cached long; index.html must
+  // revalidate so new deploys are picked up. Cuts repeat fetches (data transfer,
+  // API Gateway requests, Lambda invocations).
+  const isImmutable = rel.startsWith('assets/') || BINARY_EXT.has(ext);
+  const cacheControl = isImmutable
+    ? 'public, max-age=31536000, immutable'
+    : 'no-cache';
+
+  const headers = {
+    'Content-Type': MIME[ext] || 'application/octet-stream',
+    'Cache-Control': cacheControl,
+    ...CORS,
+  };
+
   if (BINARY_EXT.has(ext)) {
     return {
       statusCode: 200,
-      headers: { 'Content-Type': MIME[ext] || 'application/octet-stream', ...CORS },
+      headers,
       body: fs.readFileSync(filePath).toString('base64'),
       isBase64Encoded: true,
     };
   }
-  return {
-    statusCode: 200,
-    headers: { 'Content-Type': MIME[ext] || 'application/octet-stream', ...CORS },
-    body: fs.readFileSync(filePath, 'utf8'),
-  };
+  return { statusCode: 200, headers, body: fs.readFileSync(filePath, 'utf8') };
 }
 
 // Masked, non-sensitive view of the stored SiteStripe session.

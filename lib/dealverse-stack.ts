@@ -6,6 +6,7 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as logs from 'aws-cdk-lib/aws-logs';
 
 export class DealverseStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
@@ -29,6 +30,8 @@ export class DealverseStack extends Stack {
       environment: {
         TABLE_NAME: configTable.tableName,
       },
+      // Cap log storage so CloudWatch Logs can't grow (and bill) forever.
+      logRetention: logs.RetentionDays.TWO_WEEKS,
     });
 
     // Let the Lambda read/write the config table.

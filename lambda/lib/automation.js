@@ -60,9 +60,22 @@ async function processListener(l) {
   return posted;
 }
 
+function isDue(l, trigger) {
+  if (!l.auto) return false;
+  if (trigger === 'manual') return true;
+  const iv = (l.intervalMinutes || 60) * 60 * 1000;
+  if (iv <= 0) return true; // 0 = run every tick
+  return !l.lastRunAt || Date.now() - Date.parse(l.lastRunAt) >= iv;
+}
+
 // trigger: 'schedule' (each listener respects its own interval) | 'manual'
-// (runs every enabled listener now).
+// (runs every enabled listener now). Cheap on idle: a tick with nothing due does
+// a single read and no writes — no lock churn.
 async function runAutomation(trigger) {
+  const items = await getListeners(); // 1 read
+  const due = items.filter((l) => isDue(l, trigger));
+  if (!due.length) return { skipped: 'none-due' };
+
   const a = await getAutomation();
   if (a.running && a.runningSince && Date.now() - Date.parse(a.runningSince) < MAX_RUN_MS) {
     return { skipped: 'locked' };
@@ -74,15 +87,9 @@ async function runAutomation(trigger) {
   let posted = 0;
   let ran = 0;
   try {
-    const items = await getListeners();
-    for (const l of items) {
-      if (!l.auto) continue;
-      if (trigger === 'schedule') {
-        const iv = (l.intervalMinutes || 60) * 60 * 1000;
-        if (iv > 0 && l.lastRunAt && Date.now() - Date.parse(l.lastRunAt) < iv) continue;
-      }
+    for (const l of due) {
       ran++;
-      posted += await processListener(l); // mutates l in place
+      posted += await processListener(l); // mutates l (a ref into items)
     }
     await saveListeners(items);
     a.lastResult = { trigger, ran, posted, at: new Date().toISOString() };
