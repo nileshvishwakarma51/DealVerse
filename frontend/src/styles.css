@@ -190,3 +190,66 @@ code {
   border-top: 1px solid #232833;
   margin: 28px 0 24px;
 }
+
+.app > .card + .card {
+  margin-top: 20px;
+}
+
+.product-title {
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+.badge {
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #2a2f3a;
+  color: #cbd2da;
+}
+
+.badge.ok {
+  background: #14532d;
+  color: #4ade80;
+}
+
+.listrow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #232833;
+  font-size: 0.85rem;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 60px 16px;
+  z-index: 100;
+  overflow-y: auto;
+}
+
+.modal {
+  background: #161a21;
+  border: 1px solid #2a2f3a;
+  border-radius: 12px;
+  padding: 24px;
+  width: 100%;
+  max-width: 560px;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.modal-head h2 {
+  margin: 0;
+}

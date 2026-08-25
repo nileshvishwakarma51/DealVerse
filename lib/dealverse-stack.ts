@@ -22,8 +22,8 @@ export class DealverseStack extends Stack {
       runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'hello.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambda')),
-      timeout: Duration.seconds(10),
-      memorySize: 128,
+      timeout: Duration.seconds(30),
+      memorySize: 256,
       environment: {
         TABLE_NAME: configTable.tableName,
       },

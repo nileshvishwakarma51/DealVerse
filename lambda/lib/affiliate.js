@@ -6,13 +6,14 @@
 const { ApiError } = require('./errors');
 const { getConfig } = require('./store');
 const { buildCleanProductUrl, requestShortUrl, buildTagUrl } = require('./amazon');
+const { fetchProductMeta } = require('./productMeta');
 
 const SITESTRIPE_KEY = 'sitestripe';
 const AMAZON_KEY = 'amazon';
 const DEFAULT_AMAZON = { mode: 'TAG', tag: '' };
 
-// rawUrl -> { success, platform, method, fallback, affiliateUrl, resolvedUrl, asin }
-async function generateAmazonLink(rawUrl) {
+// Core: rawUrl -> { success, platform, method, fallback, affiliateUrl, resolvedUrl, asin }
+async function buildLink(rawUrl) {
   const amazon = (await getConfig(AMAZON_KEY)) || DEFAULT_AMAZON;
   const { cleanUrl, asin, hostname } = await buildCleanProductUrl(rawUrl);
 
@@ -22,17 +23,8 @@ async function generateAmazonLink(rawUrl) {
     if (siteStripe) {
       try {
         const shortUrl = await requestShortUrl(siteStripe, cleanUrl);
-        return {
-          success: true,
-          platform: 'amazon',
-          method: 'sitestripe',
-          fallback: false,
-          affiliateUrl: shortUrl,
-          resolvedUrl: cleanUrl,
-          asin,
-        };
+        return { success: true, platform: 'amazon', method: 'sitestripe', fallback: false, affiliateUrl: shortUrl, resolvedUrl: cleanUrl, asin };
       } catch (err) {
-        // fall through to TAG fallback below
         if (!amazon.tag) {
           throw new ApiError(
             err instanceof ApiError ? err.status : 502,
@@ -43,32 +35,24 @@ async function generateAmazonLink(rawUrl) {
     } else if (!amazon.tag) {
       throw new ApiError(400, 'SiteStripe session is not configured and there is no tag to fall back to.');
     }
-
     // Fallback (or no session): TAG mode.
-    return {
-      success: true,
-      platform: 'amazon',
-      method: 'tag',
-      fallback: true,
-      affiliateUrl: buildTagUrl(hostname, asin, amazon.tag),
-      resolvedUrl: cleanUrl,
-      asin,
-    };
+    return { success: true, platform: 'amazon', method: 'tag', fallback: true, affiliateUrl: buildTagUrl(hostname, asin, amazon.tag), resolvedUrl: cleanUrl, asin };
   }
 
   // TAG mode: pure rewrite.
   if (!amazon.tag) {
     throw new ApiError(400, 'No affiliate tag configured. Ask an admin to set it up.');
   }
-  return {
-    success: true,
-    platform: 'amazon',
-    method: 'tag',
-    fallback: false,
-    affiliateUrl: buildTagUrl(hostname, asin, amazon.tag),
-    resolvedUrl: cleanUrl,
-    asin,
-  };
+  return { success: true, platform: 'amazon', method: 'tag', fallback: false, affiliateUrl: buildTagUrl(hostname, asin, amazon.tag), resolvedUrl: cleanUrl, asin };
+}
+
+// Public: build the link and best-effort attach product title + price.
+async function generateAmazonLink(rawUrl, { withMeta = true } = {}) {
+  const result = await buildLink(rawUrl);
+  if (withMeta) {
+    result.product = await fetchProductMeta(result.resolvedUrl);
+  }
+  return result;
 }
 
 module.exports = { generateAmazonLink, SITESTRIPE_KEY, AMAZON_KEY, DEFAULT_AMAZON };

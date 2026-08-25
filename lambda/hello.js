@@ -12,6 +12,19 @@ const {
   AMAZON_KEY,
   DEFAULT_AMAZON,
 } = require('./lib/affiliate');
+const {
+  TELEGRAM_KEY,
+  connectBot,
+  confirmBot,
+  removeBot,
+  sendTest,
+  addChannel,
+  removeChannel,
+  publishToChannels,
+  processUpdate,
+  maskTelegram,
+  formatAffiliateMessage,
+} = require('./lib/telegram');
 
 // ── Static React build (copied into lambda/public at build time) ────────────
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -83,6 +96,21 @@ function parseBody(event) {
   }
 }
 
+function lowerHeaders(event) {
+  const out = {};
+  const h = event.headers || {};
+  for (const k in h) out[k.toLowerCase()] = h[k];
+  return out;
+}
+
+// This API's own public base URL (e.g. https://<id>.execute-api…/prod).
+function selfBaseUrl(event) {
+  const h = lowerHeaders(event);
+  const host = h.host || '';
+  const stage = (event.requestContext && event.requestContext.stage) || '';
+  return `https://${host}/${stage}`;
+}
+
 exports.handler = async (event) => {
   const method = event.httpMethod;
   const reqPath = (event.path || '/').replace(/\/+$/, '') || '/';
@@ -145,13 +173,97 @@ exports.handler = async (event) => {
       return respond(200, { success: true, sitestripe: maskSiteStripe(value) });
     }
 
+    // ── Admin: Telegram bot status (protected) ────────────────────────────
+    if (method === 'GET' && reqPath.endsWith('/api/admin/telegram')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const cfg = await getConfig(TELEGRAM_KEY);
+      return respond(200, {
+        success: true,
+        telegram: maskTelegram(cfg),
+        suggestedBaseUrl: selfBaseUrl(event),
+      });
+    }
+
+    // ── Admin: connect a bot (validate + register webhook) (protected) ─────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/telegram/connect')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { token, baseUrl } = parseBody(event);
+      const base = (typeof baseUrl === 'string' && baseUrl.trim()) || selfBaseUrl(event);
+      const webhookUrl = `${base.replace(/\/+$/, '')}/telegram/webhook`;
+      const cfg = await connectBot(token, webhookUrl);
+      return respond(200, { success: true, telegram: maskTelegram(cfg) });
+    }
+
+    // ── Admin: finalize bot setup (protected) ─────────────────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/telegram/save')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const cfg = await confirmBot();
+      return respond(200, { success: true, telegram: maskTelegram(cfg) });
+    }
+
+    // ── Admin: remove the bot (protected) ─────────────────────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/telegram/remove')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      await removeBot();
+      return respond(200, { success: true, telegram: { configured: false } });
+    }
+
+    // ── Admin: send a test message to a chat/channel (protected) ──────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/telegram/test-message')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { chatId, text } = parseBody(event);
+      if (chatId === undefined || chatId === null || String(chatId).trim() === '') {
+        return respond(400, { success: false, error: 'chatId is required.' });
+      }
+      await sendTest(chatId, text);
+      return respond(200, { success: true });
+    }
+
+    // ── Admin: add a channel (protected) ──────────────────────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/telegram/channel/add')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { id, title } = parseBody(event);
+      const cfg = await addChannel(id, title);
+      return respond(200, { success: true, telegram: maskTelegram(cfg) });
+    }
+
+    // ── Admin: remove a channel (protected) ───────────────────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/telegram/channel/remove')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { id } = parseBody(event);
+      const cfg = await removeChannel(id);
+      return respond(200, { success: true, telegram: maskTelegram(cfg) });
+    }
+
+    // ── Telegram webhook (public; verified by secret header) ──────────────
+    if (method === 'POST' && reqPath.endsWith('/telegram/webhook')) {
+      const cfg = await getConfig(TELEGRAM_KEY);
+      const secretHeader = lowerHeaders(event)['x-telegram-bot-api-secret-token'] || '';
+      if (cfg && cfg.webhookSecret && secretHeader === cfg.webhookSecret) {
+        let update = null;
+        try {
+          update = JSON.parse(event.body || '{}');
+        } catch {
+          update = null;
+        }
+        if (update) await processUpdate(update);
+      }
+      return respond(200, { ok: true }); // always 200 so Telegram does not retry
+    }
+
     // ── Public: affiliate link generation ─────────────────────────────────
     if (method === 'POST' && reqPath.endsWith('/api/affiliate/generate-link')) {
       const { url } = parseBody(event);
       if (typeof url !== 'string' || url.trim() === '') {
-        return respond(400, { success: false, error: 'Paste an amazon.in product link.' });
+        return respond(400, { success: false, error: 'Paste an Amazon product link.' });
       }
       const result = await generateAmazonLink(url.trim());
+      // Publish to configured channels so all subscribers see the deal too.
+      try {
+        await publishToChannels(formatAffiliateMessage(result));
+      } catch {
+        /* channel publish is best-effort */
+      }
       return respond(200, result);
     }
 
