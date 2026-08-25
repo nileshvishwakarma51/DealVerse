@@ -361,3 +361,25 @@ code {
   padding: 8px 0;
   border-top: 1px solid #1c212b;
 }
+
+.listener-card {
+  border-bottom: 1px solid #232833;
+  padding-bottom: 10px;
+  margin-bottom: 6px;
+}
+
+.listener-card .listrow {
+  border-bottom: 0;
+}
+
+.auto-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 4px 0 2px;
+}
+
+.auto-row .num {
+  width: 52px;
+}

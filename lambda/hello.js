@@ -36,14 +36,9 @@ const {
   getListeners,
   addListener,
   removeListener,
-  setListenerAuto,
+  setListenerAutomation,
 } = require('./lib/listener');
-const {
-  getAutomation,
-  saveAutomation,
-  maskAutomation,
-  runAutomation,
-} = require('./lib/automation');
+const { getAutomation, maskAutomation, runAutomation } = require('./lib/automation');
 
 // ── Static React build (copied into lambda/public at build time) ────────────
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -335,11 +330,11 @@ exports.handler = async (event) => {
       return respond(200, { success: true, listeners });
     }
 
-    // ── Admin: toggle a listener's inclusion in the hourly auto-run ───────
-    if (method === 'POST' && reqPath.endsWith('/api/admin/listener/auto')) {
+    // ── Admin: per-listener automation settings (protected) ──────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/listener/automation')) {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
-      const { username, auto } = parseBody(event);
-      const listeners = await setListenerAuto(username, auto);
+      const { username, auto, intervalMinutes, count } = parseBody(event);
+      const listeners = await setListenerAutomation(username, { auto, intervalMinutes, count });
       return respond(200, { success: true, listeners });
     }
 
@@ -347,14 +342,6 @@ exports.handler = async (event) => {
     if (method === 'GET' && reqPath.endsWith('/api/admin/automation')) {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
       return respond(200, { success: true, automation: maskAutomation(await getAutomation()) });
-    }
-
-    // ── Admin: save automation enable + interval (protected) ──────────────
-    if (method === 'POST' && reqPath.endsWith('/api/admin/automation') && !reqPath.endsWith('/run')) {
-      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
-      const { enabled, intervalMinutes } = parseBody(event);
-      const a = await saveAutomation({ enabled, intervalMinutes });
-      return respond(200, { success: true, automation: maskAutomation(a) });
     }
 
     // ── Admin: run the automation now (protected) ─────────────────────────

@@ -1,68 +1,69 @@
 'use strict';
 
-// Listener automation: on each EventBridge tick (or a manual "Run now"), sweep
-// the enabled listener channels, generate fresh affiliate links for NEW messages
-// only, and publish them to the auto-post channels. Runtime-configurable
-// interval + a DynamoDB lock so runs never overlap.
+// Per-listener automation. On each EventBridge tick (or manual "Run now"), each
+// listener with automation enabled runs on ITS OWN interval and message count.
+// A single DynamoDB lock prevents overlapping sweeps; per-listener lastProcessed
+// de-dups so nothing is posted twice.
 const { getConfig, setConfig } = require('./store');
-const { getListeners, fetchAmazonMessages, allAmazonLinks } = require('./listener');
+const { getListeners, saveListeners, fetchAmazonMessages, allAmazonLinks } = require('./listener');
 const { generateAmazonLink } = require('./affiliate');
 const { publishToChannels } = require('./telegram');
 
-const AUTOMATION_KEY = 'automation';
-const DEFAULT = { enabled: false, intervalMinutes: 60 };
-const MAX_RUN_MS = 4 * 60 * 1000; // stale-lock threshold
-const PER_LISTENER_LIMIT = 8; // newest Amazon-link messages scanned per run
+const AUTOMATION_KEY = 'automation'; // holds only the run lock + last summary
+const MAX_RUN_MS = 4 * 60 * 1000;
 
 async function getAutomation() {
-  return (await getConfig(AUTOMATION_KEY)) || { ...DEFAULT };
+  return (await getConfig(AUTOMATION_KEY)) || {};
 }
 
 function maskAutomation(a) {
-  return {
-    enabled: !!a.enabled,
-    intervalMinutes: a.intervalMinutes || DEFAULT.intervalMinutes,
-    lastRunAt: a.lastRunAt || null,
-    lastResult: a.lastResult || null,
-    running: !!a.running,
-  };
-}
-
-async function saveAutomation({ enabled, intervalMinutes }) {
-  const a = await getAutomation();
-  if (typeof enabled === 'boolean') a.enabled = enabled;
-  if (intervalMinutes !== undefined) {
-    const n = parseInt(intervalMinutes, 10);
-    a.intervalMinutes = Math.min(Math.max(Number.isFinite(n) ? n : 60, 5), 1440);
-  }
-  await setConfig(AUTOMATION_KEY, a);
-  return a;
+  return { running: !!a.running, lastResult: a.lastResult || null };
 }
 
 function composeMessage(text, items) {
   let out = text || '';
   const appended = [];
   for (const it of items) {
-    if (it.text && out.includes(it.source)) out = out.split(it.source).join(it.affiliateUrl);
+    if (out.includes(it.source)) out = out.split(it.source).join(it.affiliateUrl);
     else appended.push(it.affiliateUrl);
   }
-  const extra = appended.length ? '\n' + appended.join('\n') : '';
-  return (out + extra).trim();
+  return (out + (appended.length ? '\n' + appended.join('\n') : '')).trim();
 }
 
-// trigger: 'schedule' (respects enable + interval) | 'manual' (ignores both).
-async function runAutomation(trigger) {
-  const a = await getAutomation();
+async function processListener(l) {
+  const count = Math.min(Math.max(l.count || 5, 1), 20);
+  const msgs = await fetchAmazonMessages(l.username, count);
+  const prev = l.lastProcessed || 0;
+  const fresh = msgs.filter((m) => m.numId > prev).sort((x, y) => x.numId - y.numId);
+  let maxId = prev;
+  let posted = 0;
 
-  if (trigger === 'schedule') {
-    if (!a.enabled) return { skipped: 'disabled' };
-    const interval = (a.intervalMinutes || DEFAULT.intervalMinutes) * 60 * 1000;
-    if (a.lastRunAt && Date.now() - Date.parse(a.lastRunAt) < interval) {
-      return { skipped: 'interval' };
+  for (const m of fresh) {
+    const items = [];
+    for (const url of allAmazonLinks(m.links)) {
+      try {
+        const r = await generateAmazonLink(url, { withMeta: false });
+        items.push({ source: url, affiliateUrl: r.affiliateUrl });
+      } catch {
+        /* skip a link that can't be affiliated */
+      }
     }
+    if (items.length) {
+      const sent = await publishToChannels(composeMessage(m.text, items), { autoOnly: true });
+      if (sent > 0) posted++;
+    }
+    if (m.numId > maxId) maxId = m.numId;
   }
 
-  // Overlap guard.
+  l.lastProcessed = maxId;
+  l.lastRunAt = new Date().toISOString();
+  return posted;
+}
+
+// trigger: 'schedule' (each listener respects its own interval) | 'manual'
+// (runs every enabled listener now).
+async function runAutomation(trigger) {
+  const a = await getAutomation();
   if (a.running && a.runningSince && Date.now() - Date.parse(a.runningSince) < MAX_RUN_MS) {
     return { skipped: 'locked' };
   }
@@ -71,41 +72,20 @@ async function runAutomation(trigger) {
   await setConfig(AUTOMATION_KEY, a);
 
   let posted = 0;
-  let scanned = 0;
+  let ran = 0;
   try {
-    const listeners = (await getListeners()).filter((l) => l.auto);
-    const lastProcessed = a.lastProcessed || {};
-
-    for (const l of listeners) {
-      const msgs = await fetchAmazonMessages(l.username, PER_LISTENER_LIMIT);
-      const prev = lastProcessed[l.username] || 0;
-      // Only messages newer than what we've already posted, oldest first.
-      const fresh = msgs.filter((m) => m.numId > prev).sort((x, y) => x.numId - y.numId);
-      let maxId = prev;
-
-      for (const m of fresh) {
-        scanned++;
-        const items = [];
-        for (const url of allAmazonLinks(m.links)) {
-          try {
-            const r = await generateAmazonLink(url, { withMeta: false });
-            items.push({ source: url, affiliateUrl: r.affiliateUrl, text: true });
-          } catch {
-            /* skip a link that can't be affiliated */
-          }
-        }
-        if (items.length) {
-          const sent = await publishToChannels(composeMessage(m.text, items), { autoOnly: true });
-          if (sent > 0) posted++;
-        }
-        if (m.numId > maxId) maxId = m.numId;
+    const items = await getListeners();
+    for (const l of items) {
+      if (!l.auto) continue;
+      if (trigger === 'schedule') {
+        const iv = (l.intervalMinutes || 60) * 60 * 1000;
+        if (iv > 0 && l.lastRunAt && Date.now() - Date.parse(l.lastRunAt) < iv) continue;
       }
-      lastProcessed[l.username] = maxId;
+      ran++;
+      posted += await processListener(l); // mutates l in place
     }
-
-    a.lastProcessed = lastProcessed;
-    a.lastRunAt = new Date().toISOString();
-    a.lastResult = { trigger, posted, scanned, listeners: listeners.length, at: a.lastRunAt };
+    await saveListeners(items);
+    a.lastResult = { trigger, ran, posted, at: new Date().toISOString() };
     return a.lastResult;
   } finally {
     a.running = false;
@@ -114,4 +94,4 @@ async function runAutomation(trigger) {
   }
 }
 
-module.exports = { AUTOMATION_KEY, getAutomation, saveAutomation, maskAutomation, runAutomation };
+module.exports = { AUTOMATION_KEY, getAutomation, maskAutomation, runAutomation };
