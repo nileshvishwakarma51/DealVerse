@@ -267,3 +267,45 @@ code {
   margin-bottom: 8px;
   color: #cbd2da;
 }
+
+.rowactions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.num {
+  width: 56px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid #2a2f3a;
+  background: #0f1319;
+  color: #e6e8eb;
+  font-size: 0.8rem;
+}
+
+.collhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+}
+
+.collhead h2 {
+  margin: 0;
+}
+
+.chev {
+  color: #9aa2ad;
+  font-size: 0.8rem;
+}
+
+.collbody {
+  margin-top: 16px;
+}
+
+.linkitem {
+  padding: 8px 0;
+  border-top: 1px solid #1c212b;
+}

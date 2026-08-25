@@ -58,12 +58,27 @@ async function resolveShortLink(rawUrl) {
     throw new ApiError(502, 'The short link did not resolve to a valid URL.');
   }
   if (isShortLink(host) || !isAmazonHost(host)) {
-    throw new ApiError(400, 'The short link did not resolve to an Amazon product page.');
+    throw new ApiError(400, 'The short link did not resolve to an Amazon page.');
   }
   return finalUrl;
 }
 
-// rawUrl -> { hostname, asin, cleanUrl } where cleanUrl is https://<host>/dp/<ASIN>
+// Remove other people's affiliate / tracking params so we can apply our own.
+const TRACKING_PARAMS = new Set(['tag', 'ascsubtag', 'linkcode', 'linkid', 'creative', 'creativeasin']);
+function stripTracking(url) {
+  const u = new URL(url.toString());
+  for (const key of [...u.searchParams.keys()]) {
+    const k = key.toLowerCase();
+    if (TRACKING_PARAMS.has(k) || k.startsWith('ref')) u.searchParams.delete(key);
+  }
+  u.hash = '';
+  return u;
+}
+
+// rawUrl -> { hostname, asin, cleanUrl }.
+// Product links collapse to https://<host>/dp/<ASIN>; non-product Amazon pages
+// (search, storefront, deals) keep their path/query with tracking stripped so we
+// can still affiliate them (asin is null in that case).
 async function buildCleanProductUrl(rawUrl) {
   let prelim;
   try {
@@ -79,15 +94,54 @@ async function buildCleanProductUrl(rawUrl) {
 
   const url = validateAmazonUrl(target);
   const asin = extractAsin(url.pathname);
-  if (!asin) {
-    throw new ApiError(400, 'Could not find a product ASIN in that link.');
+  if (asin) {
+    return { hostname: url.hostname, asin, cleanUrl: `https://${url.hostname}/dp/${asin}` };
   }
-  return { hostname: url.hostname, asin, cleanUrl: `https://${url.hostname}/dp/${asin}` };
+  // Non-product Amazon page — affiliate the page itself.
+  return { hostname: url.hostname, asin: null, cleanUrl: stripTracking(url).toString() };
 }
 
-// TAG mode: pure URL rewrite to https://<host>/dp/<ASIN>?tag=<TAG> (no session).
+// TAG mode: rewrite to https://<host>/dp/<ASIN>?tag=<TAG> (no session).
 function buildTagUrl(hostname, asin, tag) {
   const u = new URL(`https://${hostname}/dp/${asin}`);
+  u.searchParams.set('tag', tag);
+  return u.toString();
+}
+
+// Expand an affiliate link (incl. link.amazon / amzn.to short links) and report
+// the tag it actually carries, so an admin can confirm attribution is theirs.
+async function verifyAffiliate(affiliateUrl) {
+  let res;
+  try {
+    res = await fetchWithTimeout(affiliateUrl, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: { 'user-agent': BROWSER_UA },
+    });
+  } catch {
+    throw new ApiError(502, 'Could not expand the affiliate link.');
+  }
+  const finalUrl = res.url || affiliateUrl;
+  let tag = null;
+  let sitestripe = false;
+  try {
+    const u = new URL(finalUrl);
+    tag = u.searchParams.get('tag');
+    // SiteStripe links attribute via these markers, not a tag param.
+    sitestripe =
+      u.searchParams.get('btn_type') === 'ss' ||
+      u.searchParams.has('ascsubtag') ||
+      u.searchParams.has('btn_ref');
+  } catch {
+    /* ignore */
+  }
+  return { finalUrl, tag, sitestripe };
+}
+
+// Append our tag to any (already-cleaned) Amazon URL — used for non-product pages.
+function appendTag(cleanUrl, tag) {
+  const u = new URL(cleanUrl);
+  u.searchParams.delete('tag');
   u.searchParams.set('tag', tag);
   return u.toString();
 }
@@ -150,5 +204,7 @@ module.exports = {
   buildCleanProductUrl,
   requestShortUrl,
   buildTagUrl,
+  appendTag,
+  verifyAffiliate,
   extractAsin,
 };

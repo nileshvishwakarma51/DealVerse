@@ -5,7 +5,7 @@
 // Telegram webhook so both behave identically.
 const { ApiError } = require('./errors');
 const { getConfig } = require('./store');
-const { buildCleanProductUrl, requestShortUrl, buildTagUrl } = require('./amazon');
+const { buildCleanProductUrl, requestShortUrl, buildTagUrl, appendTag } = require('./amazon');
 const { fetchProductMeta } = require('./productMeta');
 
 const SITESTRIPE_KEY = 'sitestripe';
@@ -16,6 +16,8 @@ const DEFAULT_AMAZON = { mode: 'TAG', tag: '' };
 async function buildLink(rawUrl) {
   const amazon = (await getConfig(AMAZON_KEY)) || DEFAULT_AMAZON;
   const { cleanUrl, asin, hostname } = await buildCleanProductUrl(rawUrl);
+  // TAG URL works for products (/dp/ASIN) and non-product pages alike.
+  const tagUrl = (tag) => (asin ? buildTagUrl(hostname, asin, tag) : appendTag(cleanUrl, tag));
 
   // SITE_STRIPE mode: try the live call, fall back to TAG on any error.
   if (amazon.mode === 'SITE_STRIPE') {
@@ -36,14 +38,14 @@ async function buildLink(rawUrl) {
       throw new ApiError(400, 'SiteStripe session is not configured and there is no tag to fall back to.');
     }
     // Fallback (or no session): TAG mode.
-    return { success: true, platform: 'amazon', method: 'tag', fallback: true, affiliateUrl: buildTagUrl(hostname, asin, amazon.tag), resolvedUrl: cleanUrl, asin };
+    return { success: true, platform: 'amazon', method: 'tag', fallback: true, affiliateUrl: tagUrl(amazon.tag), resolvedUrl: cleanUrl, asin };
   }
 
   // TAG mode: pure rewrite.
   if (!amazon.tag) {
     throw new ApiError(400, 'No affiliate tag configured. Ask an admin to set it up.');
   }
-  return { success: true, platform: 'amazon', method: 'tag', fallback: false, affiliateUrl: buildTagUrl(hostname, asin, amazon.tag), resolvedUrl: cleanUrl, asin };
+  return { success: true, platform: 'amazon', method: 'tag', fallback: false, affiliateUrl: tagUrl(amazon.tag), resolvedUrl: cleanUrl, asin };
 }
 
 // Public: build the link and best-effort attach product title + price.

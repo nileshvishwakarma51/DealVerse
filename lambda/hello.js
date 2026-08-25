@@ -6,6 +6,7 @@ const { ApiError } = require('./lib/errors');
 const { getConfig, setConfig } = require('./lib/store');
 const { isValidSecret, expectedToken, checkBearer } = require('./lib/auth');
 const { parseCurl, validateParsedCurl } = require('./lib/curl');
+const { verifyAffiliate } = require('./lib/amazon');
 const {
   generateAmazonLink,
   SITESTRIPE_KEY,
@@ -280,7 +281,7 @@ exports.handler = async (event) => {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
       const { channel, limit } = parseBody(event);
       const username = parseUsername(channel);
-      const n = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 20);
+      const n = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 30);
       const messages = await fetchEnriched(username, n);
       return respond(200, { success: true, username, messages });
     }
@@ -329,6 +330,29 @@ exports.handler = async (event) => {
         /* channel publish is best-effort */
       }
       return respond(200, result);
+    }
+
+    // ── Admin: verify an affiliate link carries our tag (protected) ───────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/affiliate/verify')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { url } = parseBody(event);
+      if (typeof url !== 'string' || url.trim() === '') {
+        return respond(400, { success: false, error: 'No URL to verify.' });
+      }
+      const amazon = (await getConfig(AMAZON_KEY)) || DEFAULT_AMAZON;
+      const { finalUrl, tag, sitestripe } = await verifyAffiliate(url.trim());
+      let ok = false;
+      let status;
+      if (tag) {
+        ok = !!amazon.tag && tag.toLowerCase() === String(amazon.tag).toLowerCase();
+        status = ok ? `Your tag (${tag})` : `Different tag (${tag})`;
+      } else if (sitestripe) {
+        ok = true;
+        status = 'SiteStripe attributed (your session)';
+      } else {
+        status = 'No affiliate attribution found';
+      }
+      return respond(200, { success: true, finalUrl, tag, sitestripe, configuredTag: amazon.tag || null, ok, status });
     }
 
     // ── Public: is the affiliate service configured? ──────────────────────

@@ -215,10 +215,30 @@ function AdminPanel({ token, onUnauthorized }) {
   const authFetch = useRef(makeAuth(token, onUnauthorized)).current;
   return (
     <>
-      <AmazonConfig authFetch={authFetch} />
-      <TelegramConfig authFetch={authFetch} />
-      <ListenerConfig authFetch={authFetch} />
+      <Collapsible title="Amazon affiliate config">
+        <AmazonConfig authFetch={authFetch} />
+      </Collapsible>
+      <Collapsible title="Telegram bot">
+        <TelegramConfig authFetch={authFetch} />
+      </Collapsible>
+      <Collapsible title="Listener channels">
+        <ListenerConfig authFetch={authFetch} />
+      </Collapsible>
     </>
+  );
+}
+
+// Collapsed by default; mounts its children only when first opened.
+function Collapsible({ title, children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="card">
+      <div className="collhead" onClick={() => setOpen((o) => !o)}>
+        <h2>{title}</h2>
+        <span className="chev">{open ? '▲' : '▼'}</span>
+      </div>
+      {open && <div className="collbody">{children}</div>}
+    </div>
   );
 }
 
@@ -279,8 +299,7 @@ function AmazonConfig({ authFetch }) {
   }
 
   return (
-    <div className="card">
-      <h2>Amazon affiliate config</h2>
+    <>
       <p className="subtitle">Choose how affiliate links are generated.</p>
 
       <label>Mode</label>
@@ -332,7 +351,7 @@ function AmazonConfig({ authFetch }) {
         <button onClick={saveCurl} disabled={savingCurl || curl.trim() === ''}>{savingCurl ? 'Saving…' : 'Save Session'}</button>
         {curlSave && <span className={`status ${curlSave.type}`}>{curlSave.text}</span>}
       </div>
-    </div>
+    </>
   );
 }
 
@@ -369,8 +388,7 @@ function TelegramConfig({ authFetch }) {
   const configured = tg && tg.configured;
 
   return (
-    <div className="card">
-      <h2>Telegram bot</h2>
+    <>
       <p className="subtitle">Connect a bot so users can generate links in chat, and publish deals to channels.</p>
 
       {!configured ? (
@@ -425,7 +443,7 @@ function TelegramConfig({ authFetch }) {
           onSaved={() => { setShowChannelModal(false); load(); }}
         />
       )}
-    </div>
+    </>
   );
 }
 
@@ -669,22 +687,14 @@ function ListenerConfig({ authFetch }) {
   }
 
   return (
-    <div className="card">
-      <h2>Listener channels</h2>
+    <>
       <p className="subtitle">
         Read public channels (no login) and re-publish their Amazon deals with your affiliate link.
       </p>
 
       {listeners.length === 0 && <p className="meta">No listener channels yet.</p>}
       {listeners.map((c) => (
-        <div key={c.username} className="listrow">
-          <span>{c.title} <span className="meta">(@{c.username})</span></span>
-          <span>
-            <button className="link" onClick={() => setMsgFor({ username: c.username, limit: 10 })}>last 10</button>
-            <button className="link" onClick={() => setMsgFor({ username: c.username, limit: 20 })}>last 20</button>
-            <button className="link" onClick={() => remove(c.username)}>remove</button>
-          </span>
-        </div>
+        <ListenerRow key={c.username} channel={c} onOpen={(limit) => setMsgFor({ username: c.username, limit })} onRemove={() => remove(c.username)} />
       ))}
 
       <div className="row">
@@ -706,6 +716,30 @@ function ListenerConfig({ authFetch }) {
           onClose={() => setMsgFor(null)}
         />
       )}
+    </>
+  );
+}
+
+function ListenerRow({ channel, onOpen, onRemove }) {
+  const [custom, setCustom] = useState(10);
+  return (
+    <div className="listrow">
+      <span>{channel.title} <span className="meta">(@{channel.username})</span></span>
+      <span className="rowactions">
+        <button className="link" onClick={() => onOpen(10)}>last 10</button>
+        <button className="link" onClick={() => onOpen(20)}>last 20</button>
+        <input
+          className="num"
+          type="number"
+          min="1"
+          max="30"
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          title="custom count (Amazon-link messages)"
+        />
+        <button className="link" onClick={() => onOpen(Math.min(Math.max(parseInt(custom, 10) || 1, 1), 30))}>fetch</button>
+        <button className="link" onClick={onRemove}>remove</button>
+      </span>
     </div>
   );
 }
@@ -800,13 +834,31 @@ function ListenerMessagesModal({ authFetch, channel, limit, onClose }) {
     return () => { alive = false; };
   }, [authFetch, channel, limit]);
 
+  const [sendingAll, setSendingAll] = useState(false);
+  const [verify, setVerify] = useState({}); // affiliateUrl -> 'checking' | {tag, matches, error}
+
+  function msgHasAffiliate(msg) {
+    return (msg.items || []).some((it) => it.affiliate && it.affiliate.affiliateUrl);
+  }
+
+  // Replace each source link in the message text with its affiliate link.
+  function composeText(msg) {
+    let text = msg.text || '';
+    let appended = '';
+    for (const it of msg.items || []) {
+      const aff = it.affiliate && it.affiliate.affiliateUrl;
+      if (!aff) continue;
+      if (text.includes(it.sourceUrl)) text = text.split(it.sourceUrl).join(aff);
+      else appended += `\n${aff}`;
+    }
+    return (text + appended).trim();
+  }
+
   async function sendToChannel(msg) {
-    const affUrl = msg.affiliate && msg.affiliate.affiliateUrl;
-    if (!affUrl) return;
-    const text = msg.sourceUrl ? msg.text.replace(msg.sourceUrl, affUrl) : `${msg.text}\n${affUrl}`;
+    if (!msgHasAffiliate(msg)) return;
     setSent((s) => ({ ...s, [msg.id]: 'sending' }));
     try {
-      const res = await authFetch('api/admin/listener/publish', { method: 'POST', body: JSON.stringify({ text }) });
+      const res = await authFetch('api/admin/listener/publish', { method: 'POST', body: JSON.stringify({ text: composeText(msg) }) });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Publish failed.');
       setSent((s) => ({ ...s, [msg.id]: 'ok' }));
@@ -815,19 +867,73 @@ function ListenerMessagesModal({ authFetch, channel, limit, onClose }) {
     }
   }
 
+  async function sendAll() {
+    setSendingAll(true);
+    for (const m of messages) {
+      if (msgHasAffiliate(m) && sent[m.id] !== 'ok') {
+        // eslint-disable-next-line no-await-in-loop
+        await sendToChannel(m);
+      }
+    }
+    setSendingAll(false);
+  }
+
+  async function verifyLink(url) {
+    setVerify((v) => ({ ...v, [url]: 'checking' }));
+    try {
+      const res = await authFetch('api/admin/affiliate/verify', { method: 'POST', body: JSON.stringify({ url }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Verify failed.');
+      setVerify((v) => ({ ...v, [url]: { ok: data.ok, status: data.status } }));
+    } catch (err) {
+      setVerify((v) => ({ ...v, [url]: { error: err.message } }));
+    }
+  }
+
+  const sendable = messages.filter(msgHasAffiliate).length;
+
   return (
-    <Modal title={`@${channel} — last ${limit}`} onClose={onClose}>
+    <Modal title={`@${channel} — ${limit} Amazon deals`} onClose={onClose}>
       {loading && <p className="meta">Reading messages and generating affiliate links…</p>}
       {error && <p className="status err">{error}</p>}
+      {!loading && messages.length > 0 && (
+        <div className="row" style={{ marginTop: 0, marginBottom: 12 }}>
+          <button onClick={sendAll} disabled={sendingAll || sendable === 0}>
+            {sendingAll ? 'Sending…' : `Send all to channel (${sendable})`}
+          </button>
+          <span className="meta">{messages.length} messages</span>
+        </div>
+      )}
+      {!loading && messages.length === 0 && !error && (
+        <p className="meta">No Amazon-link messages found in this channel.</p>
+      )}
       {!loading && messages.map((m) => (
         <div key={m.id} className="msgcard">
           <div className="msgtext">{m.text || '(no text)'}</div>
-          {m.affiliate && m.affiliate.affiliateUrl && (
-            <a className="affiliate" href={m.affiliate.affiliateUrl} target="_blank" rel="noreferrer">{m.affiliate.affiliateUrl}</a>
-          )}
-          {m.affiliate && m.affiliate.error && <div className="status err">{m.affiliate.error}</div>}
-          {!m.sourceUrl && <div className="meta">No Amazon link in this message.</div>}
-          {m.affiliate && m.affiliate.affiliateUrl && (
+          {(m.items || []).map((it, i) => {
+            const v = verify[it.affiliate && it.affiliate.affiliateUrl];
+            return (
+              <div key={i} className="linkitem">
+                {it.affiliate && it.affiliate.affiliateUrl ? (
+                  <>
+                    <a className="affiliate" href={it.affiliate.affiliateUrl} target="_blank" rel="noreferrer">{it.affiliate.affiliateUrl}</a>
+                    <div className="row" style={{ marginTop: 4 }}>
+                      <button className="link" onClick={() => verifyLink(it.affiliate.affiliateUrl)}>verify</button>
+                      {v === 'checking' && <span className="meta">checking…</span>}
+                      {v && typeof v === 'object' && (
+                        v.error
+                          ? <span className="status err">{v.error}</span>
+                          : <span className={v.ok ? 'status ok' : 'status err'}>{v.ok ? '✓ ' : '⚠ '}{v.status}</span>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <span className="meta">⚠ {(it.affiliate && it.affiliate.error) || 'Could not convert'} — {it.sourceUrl}</span>
+                )}
+              </div>
+            );
+          })}
+          {msgHasAffiliate(m) && (
             <div className="row">
               <button className="secondary" onClick={() => sendToChannel(m)} disabled={sent[m.id] === 'sending' || sent[m.id] === 'ok'}>
                 {sent[m.id] === 'ok' ? 'Sent ✅' : sent[m.id] === 'sending' ? 'Sending…' : 'Send to channel'}
