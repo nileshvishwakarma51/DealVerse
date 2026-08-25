@@ -229,7 +229,9 @@ code {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 0;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  padding: 10px 0;
   border-bottom: 1px solid #232833;
   font-size: 0.85rem;
 }
@@ -241,7 +243,7 @@ code {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 60px 16px;
+  padding: 32px 12px;
   z-index: 100;
   overflow-y: auto;
 }
@@ -250,9 +252,29 @@ code {
   background: #161a21;
   border: 1px solid #2a2f3a;
   border-radius: 12px;
-  padding: 24px;
+  padding: 20px;
   width: 100%;
   max-width: 560px;
+}
+
+/* Long affiliate links / message text must never force horizontal scroll. */
+.modal .affiliate,
+.msgcard,
+.msgtext {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+@media (max-width: 480px) {
+  .modal-overlay {
+    padding: 16px 8px;
+  }
+  .modal {
+    padding: 16px;
+  }
+  .listrow {
+    font-size: 0.8rem;
+  }
 }
 
 .modal-head {
@@ -281,9 +303,15 @@ code {
 }
 
 .rowactions {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: 4px 6px;
+}
+
+/* Bigger tap targets for the listener action buttons on touch screens. */
+.rowactions .link {
+  padding: 8px 10px;
 }
 
 .num {
