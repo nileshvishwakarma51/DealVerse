@@ -148,6 +148,16 @@ async function addChannel(id, title) {
   return cfg;
 }
 
+// Clear the last-detected channel so the next "add channel" waits for a fresh
+// post instead of showing a previously-added one.
+async function clearLastChannel() {
+  const cfg = await getConfig(TELEGRAM_KEY);
+  if (!cfg) return {};
+  delete cfg.lastChannel;
+  await setConfig(TELEGRAM_KEY, cfg);
+  return cfg;
+}
+
 // Toggle whether user/website-generated links auto-post to this channel.
 async function setChannelAutoPublish(id, autoPublish) {
   const cfg = await getConfig(TELEGRAM_KEY);
@@ -216,7 +226,11 @@ async function processUpdate(update) {
       const chat = update.channel_post.chat;
       const cfg = await getConfig(TELEGRAM_KEY);
       if (cfg && cfg.token) {
-        cfg.lastChannel = { id: chat.id, title: chat.title || String(chat.id) };
+        cfg.lastChannel = {
+          id: chat.id,
+          title: chat.title || String(chat.id),
+          detectedAt: new Date().toISOString(),
+        };
         await setConfig(TELEGRAM_KEY, cfg);
       }
       return;
@@ -277,6 +291,7 @@ module.exports = {
   sendTest,
   addChannel,
   removeChannel,
+  clearLastChannel,
   setChannelAutoPublish,
   publishToChannels,
   publishAuto,

@@ -578,20 +578,30 @@ function ChannelModal({ authFetch, onClose, onSaved }) {
   const [detected, setDetected] = useState(null);
   const [tested, setTested] = useState(false);
 
-  // Poll for a channel post once we're detecting.
+  // Poll for a channel post once we're detecting. Reset any stale detection
+  // first so adding a second channel doesn't show the previously-added one.
   useEffect(() => {
     if (step !== 2) return undefined;
     let alive = true;
-    const tick = async () => {
+    let intervalId;
+    const start = async () => {
       try {
-        const res = await authFetch('api/admin/telegram');
-        const data = await res.json();
-        if (alive && data.telegram && data.telegram.lastChannel) setDetected(data.telegram.lastChannel);
+        await authFetch('api/admin/telegram/channel/detect-reset', { method: 'POST', body: '{}' });
       } catch { /* ignore */ }
+      if (!alive) return;
+      setDetected(null);
+      const tick = async () => {
+        try {
+          const res = await authFetch('api/admin/telegram');
+          const data = await res.json();
+          if (alive && data.telegram && data.telegram.lastChannel) setDetected(data.telegram.lastChannel);
+        } catch { /* ignore */ }
+      };
+      tick();
+      intervalId = setInterval(tick, 3000);
     };
-    tick();
-    const id = setInterval(tick, 3000);
-    return () => { alive = false; clearInterval(id); };
+    start();
+    return () => { alive = false; if (intervalId) clearInterval(intervalId); };
   }, [step, authFetch]);
 
   async function sendTest() {

@@ -21,6 +21,7 @@ const {
   sendTest,
   addChannel,
   removeChannel,
+  clearLastChannel,
   setChannelAutoPublish,
   publishToChannels,
   publishAuto,
@@ -269,6 +270,13 @@ exports.handler = async (event) => {
       const { id } = parseBody(event);
       const cfg = await removeChannel(id);
       return respond(200, { success: true, telegram: maskTelegram(cfg) });
+    }
+
+    // ── Admin: reset channel detection before adding a new channel ────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/telegram/channel/detect-reset')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      await clearLastChannel();
+      return respond(200, { success: true });
     }
 
     // ── Admin: toggle auto-publish of user links to a channel (protected) ──
