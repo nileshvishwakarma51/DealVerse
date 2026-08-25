@@ -116,9 +116,17 @@ function maskSiteStripe(cfg) {
   };
 }
 
+// With binaryMediaTypes '*/*', API Gateway base64-encodes incoming bodies.
+function rawBody(event) {
+  if (event.isBase64Encoded && event.body) {
+    return Buffer.from(event.body, 'base64').toString('utf8');
+  }
+  return event.body || '';
+}
+
 function parseBody(event) {
   try {
-    return JSON.parse(event.body || '{}');
+    return JSON.parse(rawBody(event) || '{}');
   } catch {
     throw new ApiError(400, 'Request body must be valid JSON.');
   }
@@ -334,7 +342,7 @@ exports.handler = async (event) => {
       if (cfg && cfg.webhookSecret && secretHeader === cfg.webhookSecret) {
         let update = null;
         try {
-          update = JSON.parse(event.body || '{}');
+          update = JSON.parse(rawBody(event) || '{}');
         } catch {
           update = null;
         }
