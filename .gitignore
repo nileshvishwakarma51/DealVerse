@@ -18,3 +18,8 @@ lambda/public/
 
 # OS / editor
 .DS_Store
+
+# Local screenshots
+*.PNG
+*.png
+Capture*.PNG
