@@ -158,8 +158,19 @@ async function getListeners() {
 
 async function addListener(username, title) {
   const items = await getListeners();
+  const prev = items.find((c) => c.username.toLowerCase() === username.toLowerCase());
   const next = items.filter((c) => c.username.toLowerCase() !== username.toLowerCase());
-  next.push({ username, title: title || username });
+  next.push({ username, title: title || username, auto: prev ? !!prev.auto : false });
+  await setConfig(LISTENERS_KEY, { items: next });
+  return next;
+}
+
+// Toggle whether this listener is included in the hourly auto-run.
+async function setListenerAuto(username, auto) {
+  const items = await getListeners();
+  const next = items.map((c) =>
+    c.username.toLowerCase() === String(username).toLowerCase() ? { ...c, auto: !!auto } : c
+  );
   await setConfig(LISTENERS_KEY, { items: next });
   return next;
 }
@@ -175,8 +186,12 @@ module.exports = {
   LISTENERS_KEY,
   parseUsername,
   fetchMessages,
+  fetchMessagesPage,
+  fetchAmazonMessages,
   fetchEnriched,
+  allAmazonLinks,
   getListeners,
   addListener,
   removeListener,
+  setListenerAuto,
 };

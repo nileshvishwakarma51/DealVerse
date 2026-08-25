@@ -4,6 +4,8 @@ import { Stack, StackProps, Duration, CfnOutput, RemovalPolicy } from 'aws-cdk-l
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 
 export class DealverseStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
@@ -31,6 +33,16 @@ export class DealverseStack extends Stack {
 
     // Let the Lambda read/write the config table.
     configTable.grantReadWriteData(helloFn);
+
+    // Periodic tick for listener automation. Fires every 5 minutes; the Lambda
+    // itself decides whether to run (admin enable + configurable interval) and
+    // uses a DynamoDB lock to prevent overlapping runs.
+    new events.Rule(this, 'AutomationTick', {
+      ruleName: 'dealverse-automation',
+      description: 'Ticks dealverse-lambda so it can run listener automation on the admin-configured interval.',
+      schedule: events.Schedule.rate(Duration.minutes(5)),
+      targets: [new targets.LambdaFunction(helloFn)],
+    });
 
     // API Gateway (proxy) — any path/method invokes dealverse-lambda.
     const api = new apigateway.LambdaRestApi(this, 'HelloApi', {

@@ -36,7 +36,14 @@ const {
   getListeners,
   addListener,
   removeListener,
+  setListenerAuto,
 } = require('./lib/listener');
+const {
+  getAutomation,
+  saveAutomation,
+  maskAutomation,
+  runAutomation,
+} = require('./lib/automation');
 
 // ── Static React build (copied into lambda/public at build time) ────────────
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -149,6 +156,15 @@ function selfBaseUrl(event) {
 }
 
 exports.handler = async (event) => {
+  // EventBridge scheduled tick (no HTTP context) → run listener automation.
+  if (!event.httpMethod && !event.requestContext) {
+    try {
+      return await runAutomation('schedule');
+    } catch (err) {
+      return { error: err.message };
+    }
+  }
+
   const method = event.httpMethod;
   const reqPath = (event.path || '/').replace(/\/+$/, '') || '/';
 
@@ -317,6 +333,35 @@ exports.handler = async (event) => {
       const { username } = parseBody(event);
       const listeners = await removeListener(username);
       return respond(200, { success: true, listeners });
+    }
+
+    // ── Admin: toggle a listener's inclusion in the hourly auto-run ───────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/listener/auto')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { username, auto } = parseBody(event);
+      const listeners = await setListenerAuto(username, auto);
+      return respond(200, { success: true, listeners });
+    }
+
+    // ── Admin: automation status (protected) ──────────────────────────────
+    if (method === 'GET' && reqPath.endsWith('/api/admin/automation')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      return respond(200, { success: true, automation: maskAutomation(await getAutomation()) });
+    }
+
+    // ── Admin: save automation enable + interval (protected) ──────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/automation') && !reqPath.endsWith('/run')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { enabled, intervalMinutes } = parseBody(event);
+      const a = await saveAutomation({ enabled, intervalMinutes });
+      return respond(200, { success: true, automation: maskAutomation(a) });
+    }
+
+    // ── Admin: run the automation now (protected) ─────────────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/automation/run')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const result = await runAutomation('manual');
+      return respond(200, { success: true, result });
     }
 
     // ── Admin: read last N messages + fresh affiliate links (protected) ───

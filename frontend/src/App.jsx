@@ -227,6 +227,94 @@ function AdminPanel({ token, onUnauthorized }) {
       <Collapsible title="Listener channels">
         <ListenerConfig authFetch={authFetch} />
       </Collapsible>
+      <Collapsible title="Automation">
+        <AutomationConfig authFetch={authFetch} />
+      </Collapsible>
+    </>
+  );
+}
+
+function AutomationConfig({ authFetch }) {
+  const [enabled, setEnabled] = useState(false);
+  const [interval, setIntervalMin] = useState(60);
+  const [status, setStatus] = useState(null);
+  const [saveState, setSaveState] = useState(null);
+  const [running, setRunning] = useState(false);
+  const [runResult, setRunResult] = useState(null);
+
+  async function load() {
+    const res = await authFetch('api/admin/automation');
+    const data = await res.json();
+    if (data.automation) {
+      setEnabled(!!data.automation.enabled);
+      setIntervalMin(data.automation.intervalMinutes || 60);
+      setStatus(data.automation);
+    }
+  }
+  useEffect(() => {
+    load().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function save() {
+    setSaveState(null);
+    try {
+      const res = await authFetch('api/admin/automation', {
+        method: 'POST',
+        body: JSON.stringify({ enabled, intervalMinutes: Number(interval) }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Save failed.');
+      setStatus(data.automation);
+      setSaveState({ type: 'ok', text: 'Saved.' });
+    } catch (err) {
+      setSaveState({ type: 'err', text: err.message });
+    }
+  }
+
+  async function runNow() {
+    setRunning(true);
+    setRunResult(null);
+    try {
+      const res = await authFetch('api/admin/automation/run', { method: 'POST', body: '{}' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Run failed.');
+      const r = data.result || {};
+      setRunResult(r.skipped ? `Skipped (${r.skipped}).` : `Posted ${r.posted} of ${r.scanned} new messages across ${r.listeners} listener(s).`);
+      load();
+    } catch (err) {
+      setRunResult(err.message);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <>
+      <p className="subtitle">
+        Automatically fetch new deals from listener channels (those with “hourly” on) and post them
+        to your auto-post channels, on the interval below.
+      </p>
+
+      <label className="opt" style={{ fontWeight: 600 }}>
+        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+        Enable automation
+      </label>
+
+      <label htmlFor="iv" style={{ marginTop: 16 }}>Interval (minutes)</label>
+      <input id="iv" type="number" min="5" max="1440" value={interval} onChange={(e) => setIntervalMin(e.target.value)} />
+      <p className="meta">Minimum 5 minutes. Runs never overlap.</p>
+
+      <div className="row">
+        <button onClick={save}>Save</button>
+        <button className="secondary" onClick={runNow} disabled={running}>{running ? 'Running…' : 'Run now'}</button>
+        {saveState && <span className={`status ${saveState.type}`}>{saveState.text}</span>}
+      </div>
+
+      {runResult && <p className="meta">{runResult}</p>}
+      {status && status.lastRunAt && (
+        <p className="meta">Last run: {new Date(status.lastRunAt).toLocaleString()}</p>
+      )}
     </>
   );
 }
@@ -708,6 +796,10 @@ function ListenerConfig({ authFetch }) {
     await authFetch('api/admin/listener/remove', { method: 'POST', body: JSON.stringify({ username }) });
     load();
   }
+  async function toggleAuto(username, auto) {
+    await authFetch('api/admin/listener/auto', { method: 'POST', body: JSON.stringify({ username, auto }) });
+    load();
+  }
 
   return (
     <>
@@ -717,7 +809,13 @@ function ListenerConfig({ authFetch }) {
 
       {listeners.length === 0 && <p className="meta">No listener channels yet.</p>}
       {listeners.map((c) => (
-        <ListenerRow key={c.username} channel={c} onOpen={(limit) => setMsgFor({ username: c.username, limit })} onRemove={() => remove(c.username)} />
+        <ListenerRow
+          key={c.username}
+          channel={c}
+          onOpen={(limit) => setMsgFor({ username: c.username, limit })}
+          onRemove={() => remove(c.username)}
+          onToggleAuto={(v) => toggleAuto(c.username, v)}
+        />
       ))}
 
       <div className="row">
@@ -743,12 +841,16 @@ function ListenerConfig({ authFetch }) {
   );
 }
 
-function ListenerRow({ channel, onOpen, onRemove }) {
+function ListenerRow({ channel, onOpen, onRemove, onToggleAuto }) {
   const [custom, setCustom] = useState(10);
   return (
     <div className="listrow">
       <span>{channel.title} <span className="meta">(@{channel.username})</span></span>
       <span className="rowactions">
+        <label className="opt" style={{ fontWeight: 400 }} title="Include in the hourly auto-run">
+          <input type="checkbox" checked={!!channel.auto} onChange={(e) => onToggleAuto(e.target.checked)} />
+          <span className="meta">hourly</span>
+        </label>
         <button className="link" onClick={() => onOpen(10)}>last 10</button>
         <button className="link" onClick={() => onOpen(20)}>last 20</button>
         <input

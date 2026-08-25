@@ -22,3 +22,6 @@ lambda/public/
 # Local screenshots (but keep brand assets like dealverse.png)
 Capture*.PNG
 Capture*.png
+
+# Built APKs
+*.apk
