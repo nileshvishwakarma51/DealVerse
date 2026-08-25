@@ -21,7 +21,9 @@ const {
   sendTest,
   addChannel,
   removeChannel,
+  setChannelAutoPublish,
   publishToChannels,
+  publishAuto,
   processUpdate,
   maskTelegram,
   formatAffiliateMessage,
@@ -244,6 +246,14 @@ exports.handler = async (event) => {
       return respond(200, { success: true, telegram: maskTelegram(cfg) });
     }
 
+    // ── Admin: toggle auto-publish of user links to a channel (protected) ──
+    if (method === 'POST' && reqPath.endsWith('/api/admin/telegram/channel/auto-publish')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { id, autoPublish } = parseBody(event);
+      const cfg = await setChannelAutoPublish(id, autoPublish);
+      return respond(200, { success: true, telegram: maskTelegram(cfg) });
+    }
+
     // ── Admin: list listener channels (protected) ────────────────────────
     if (method === 'GET' && reqPath.endsWith('/api/admin/listener')) {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
@@ -323,9 +333,9 @@ exports.handler = async (event) => {
         return respond(400, { success: false, error: 'Paste an Amazon product link.' });
       }
       const result = await generateAmazonLink(url.trim());
-      // Publish to configured channels so all subscribers see the deal too.
+      // Publish to channels that opted in to user/website-generated links.
       try {
-        await publishToChannels(formatAffiliateMessage(result));
+        await publishAuto(formatAffiliateMessage(result));
       } catch {
         /* channel publish is best-effort */
       }

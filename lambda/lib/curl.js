@@ -37,6 +37,8 @@ const SHORT_LINK_HOSTS = new Set([
   'www.amzn.in',
   'amzn.eu',
   'amzn.com',
+  'link.amazon', // Amazon SiteStripe short domain (also what we generate)
+  'www.link.amazon',
 ]);
 
 function isAmazonHost(host) {

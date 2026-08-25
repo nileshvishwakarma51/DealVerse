@@ -11,7 +11,7 @@ const LISTENERS_KEY = 'listeners';
 const TIMEOUT_MS = 10000;
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-const AMAZONISH = /(?:amazon\.[a-z.]+|amzn\.[a-z]+|a\.co)\//i;
+const AMAZONISH = /(?:amazon\.[a-z.]+|amzn\.[a-z]+|link\.amazon|a\.co)\//i;
 
 function decodeEntities(s) {
   return String(s || '')

@@ -81,6 +81,8 @@ async function connectBot(rawToken, webhookUrl) {
     url: webhookUrl,
     secret_token: secret,
     allowed_updates: ['message', 'channel_post'],
+    // Start clean — don't replay messages queued while the bot was disconnected.
+    drop_pending_updates: true,
   });
 
   const existing = (await getConfig(TELEGRAM_KEY)) || {};
@@ -112,7 +114,8 @@ async function removeBot() {
   const cfg = await getConfig(TELEGRAM_KEY);
   if (cfg && cfg.token) {
     try {
-      await tgCall(cfg.token, 'deleteWebhook', { drop_pending_updates: false });
+      // Drop the queue so a later re-add doesn't replay old messages.
+      await tgCall(cfg.token, 'deleteWebhook', { drop_pending_updates: true });
     } catch {
       /* ignore */
     }
@@ -134,8 +137,24 @@ async function addChannel(id, title) {
   if (!cfg || !cfg.token) throw new ApiError(400, 'Connect a bot first.');
   const channelId = String(id).trim();
   if (!channelId) throw new ApiError(400, 'Channel id is required.');
+  const prev = (cfg.channels || []).find((c) => String(c.id) === channelId);
   cfg.channels = (cfg.channels || []).filter((c) => String(c.id) !== channelId);
-  cfg.channels.push({ id: channelId, title: title || channelId });
+  cfg.channels.push({
+    id: channelId,
+    title: title || channelId,
+    autoPublish: prev ? !!prev.autoPublish : false,
+  });
+  await setConfig(TELEGRAM_KEY, cfg);
+  return cfg;
+}
+
+// Toggle whether user/website-generated links auto-post to this channel.
+async function setChannelAutoPublish(id, autoPublish) {
+  const cfg = await getConfig(TELEGRAM_KEY);
+  if (!cfg || !cfg.token) throw new ApiError(400, 'Connect a bot first.');
+  cfg.channels = (cfg.channels || []).map((c) =>
+    String(c.id) === String(id) ? { ...c, autoPublish: !!autoPublish } : c
+  );
   await setConfig(TELEGRAM_KEY, cfg);
   return cfg;
 }
@@ -148,12 +167,14 @@ async function removeChannel(id) {
   return cfg;
 }
 
-// Publish text to every configured channel using the stored bot. Best-effort.
-async function publishToChannels(text) {
+// Publish text to configured channels using the stored bot. Best-effort.
+// `autoOnly` restricts to channels with the auto-publish toggle on.
+async function publishToChannels(text, { autoOnly = false } = {}) {
   const cfg = await getConfig(TELEGRAM_KEY);
   if (!cfg || !cfg.token || !(cfg.channels || []).length) return 0;
+  const targets = autoOnly ? cfg.channels.filter((c) => c.autoPublish) : cfg.channels;
   let sent = 0;
-  for (const ch of cfg.channels) {
+  for (const ch of targets) {
     try {
       await sendMessage(cfg.token, ch.id, text);
       sent++;
@@ -163,6 +184,9 @@ async function publishToChannels(text) {
   }
   return sent;
 }
+
+// Auto-publish (only channels with the toggle on) — for user/website links.
+const publishAuto = (text) => publishToChannels(text, { autoOnly: true });
 
 function extractUrl(text) {
   if (!text) return null;
@@ -233,8 +257,8 @@ async function processUpdate(update) {
       const result = await generateAmazonLink(url);
       const reply = formatAffiliateMessage(result);
       await sendMessage(token, chatId, reply);
-      // Also publish to configured channels so all subscribers see the deal.
-      await publishToChannels(reply);
+      // Also publish to channels that opted in to user-generated links.
+      await publishAuto(reply);
     } catch (err) {
       const message =
         err instanceof ApiError ? err.message : 'Sorry, I could not process that link.';
@@ -253,7 +277,9 @@ module.exports = {
   sendTest,
   addChannel,
   removeChannel,
+  setChannelAutoPublish,
   publishToChannels,
+  publishAuto,
   processUpdate,
   maskTelegram,
   formatAffiliateMessage,

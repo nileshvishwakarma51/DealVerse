@@ -384,6 +384,10 @@ function TelegramConfig({ authFetch }) {
     await authFetch('api/admin/telegram/channel/remove', { method: 'POST', body: JSON.stringify({ id }) });
     load();
   }
+  async function toggleAuto(id, autoPublish) {
+    await authFetch('api/admin/telegram/channel/auto-publish', { method: 'POST', body: JSON.stringify({ id, autoPublish }) });
+    load();
+  }
 
   const configured = tg && tg.configured;
 
@@ -416,7 +420,13 @@ function TelegramConfig({ authFetch }) {
               {(tg.channels || []).map((c) => (
                 <div key={c.id} className="listrow">
                   <span>{c.title} <span className="meta">({c.id})</span></span>
-                  <button className="link" onClick={() => removeChannel(c.id)}>remove</button>
+                  <span className="rowactions">
+                    <label className="opt" style={{ fontWeight: 400 }} title="Auto-post user/website links to this channel">
+                      <input type="checkbox" checked={!!c.autoPublish} onChange={(e) => toggleAuto(c.id, e.target.checked)} />
+                      <span className="meta">auto-post user links</span>
+                    </label>
+                    <button className="link" onClick={() => removeChannel(c.id)}>remove</button>
+                  </span>
                 </div>
               ))}
               <div className="row">
