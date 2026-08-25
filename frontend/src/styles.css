@@ -11,14 +11,14 @@ body {
   margin: 0;
   background: #0f1115;
   color: #e6e8eb;
-  display: flex;
-  justify-content: center;
   padding: 40px 16px;
+  min-height: 100vh;
 }
 
 .app {
   width: 100%;
-  max-width: 720px;
+  max-width: 640px;
+  margin: 0 auto;
 }
 
 .topbar {
@@ -303,6 +303,18 @@ code {
 
 .collbody {
   margin-top: 16px;
+}
+
+.subcoll {
+  border: 1px solid #232833;
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-top: 24px;
+  background: #12161d;
+}
+
+.subcoll .collhead h2 {
+  font-size: 1rem;
 }
 
 .linkitem {

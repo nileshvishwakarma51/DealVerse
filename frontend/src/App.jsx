@@ -229,10 +229,11 @@ function AdminPanel({ token, onUnauthorized }) {
 }
 
 // Collapsed by default; mounts its children only when first opened.
-function Collapsible({ title, children }) {
-  const [open, setOpen] = useState(false);
+// `bare` renders a lighter box for nested sub-sections.
+function Collapsible({ title, children, bare = false, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="card">
+    <div className={bare ? 'subcoll' : 'card'}>
       <div className="collhead" onClick={() => setOpen((o) => !o)}>
         <h2>{title}</h2>
         <span className="chev">{open ? '▲' : '▼'}</span>
@@ -323,34 +324,33 @@ function AmazonConfig({ authFetch }) {
         {amazonSave && <span className={`status ${amazonSave.type}`}>{amazonSave.text}</span>}
       </div>
 
-      <hr className="divider" />
+      <Collapsible title="SiteStripe session" bare defaultOpen={!!(status && status.configured)}>
+        <p className="subtitle">
+          Paste the SiteStripe <code>getShortUrl</code> cURL (DevTools → Network → Copy as cURL). Needed for SITE_STRIPE mode.
+        </p>
 
-      <h2>SiteStripe session</h2>
-      <p className="subtitle">
-        Paste the SiteStripe <code>getShortUrl</code> cURL (DevTools → Network → Copy as cURL). Needed for SITE_STRIPE mode.
-      </p>
+        <div className="statusbox">
+          {status && status.configured ? (
+            <>
+              <div><strong>Session configured</strong></div>
+              <div className="meta">endpoint: {status.endpoint}</div>
+              <div className="meta">cookies: {status.hasCookies ? `${status.cookieCount} present` : 'none'}</div>
+              {status.configuredAt && <div className="meta">saved: {new Date(status.configuredAt).toLocaleString()}</div>}
+            </>
+          ) : (
+            <div className="meta">No session configured yet.</div>
+          )}
+        </div>
 
-      <div className="statusbox">
-        {status && status.configured ? (
-          <>
-            <div><strong>Session configured</strong></div>
-            <div className="meta">endpoint: {status.endpoint}</div>
-            <div className="meta">cookies: {status.hasCookies ? `${status.cookieCount} present` : 'none'}</div>
-            {status.configuredAt && <div className="meta">saved: {new Date(status.configuredAt).toLocaleString()}</div>}
-          </>
-        ) : (
-          <div className="meta">No session configured yet.</div>
-        )}
-      </div>
+        <label htmlFor="curl">SiteStripe cURL</label>
+        <textarea id="curl" value={curl} onChange={(e) => setCurl(e.target.value)}
+          placeholder="curl 'https://www.amazon.in/associates/sitestripe/getShortUrl?...' -H '...' -b '...'" />
 
-      <label htmlFor="curl">SiteStripe cURL</label>
-      <textarea id="curl" value={curl} onChange={(e) => setCurl(e.target.value)}
-        placeholder="curl 'https://www.amazon.in/associates/sitestripe/getShortUrl?...' -H '...' -b '...'" />
-
-      <div className="row">
-        <button onClick={saveCurl} disabled={savingCurl || curl.trim() === ''}>{savingCurl ? 'Saving…' : 'Save Session'}</button>
-        {curlSave && <span className={`status ${curlSave.type}`}>{curlSave.text}</span>}
-      </div>
+        <div className="row">
+          <button onClick={saveCurl} disabled={savingCurl || curl.trim() === ''}>{savingCurl ? 'Saving…' : 'Save Session'}</button>
+          {curlSave && <span className={`status ${curlSave.type}`}>{curlSave.text}</span>}
+        </div>
+      </Collapsible>
     </>
   );
 }
