@@ -13,6 +13,19 @@ function navTo(view) {
   window.history.pushState({}, '', p);
 }
 
+const LOGO = new URL('dealverse.png', document.baseURI).toString();
+
+// Inline icons (stroke = currentColor) for the sidebar / topbar.
+const IC = {
+  tag: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3m10-10h-3M5 12H2m15.5-6.5-2 2m-9 9-2 2m13 0-2-2m-9-9-2-2" strokeLinecap="round"/></svg>,
+  send: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m21 4-9 8-9-4 18-4Z" strokeLinejoin="round"/><path d="M12 12 9 21l-1-6" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+  rss: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 9h10M7 13h6" strokeLinecap="round"/></svg>,
+  clock: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+  mega: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 10v4l7 4V6l-7 4Z" strokeLinejoin="round"/><path d="M14 9a4 4 0 0 1 0 6" strokeLinecap="round"/></svg>,
+  list: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5" strokeLinecap="round"/></svg>,
+  menu: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 6h16M4 12h16M4 18h16" strokeLinecap="round"/></svg>,
+};
+
 export default function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) || '');
   const [view, setView] = useState(() => {
@@ -49,23 +62,24 @@ export default function App() {
     goHome();
   }
 
-  return (
-    <div className="app">
-      <header className="topbar">
-        <div className="brand" onClick={goHome} style={{ cursor: 'pointer' }}>
-          <img src={new URL('dealverse.png', document.baseURI).toString()} alt="DealVerse" className="brand-logo" />
-          <h1>DealVerse</h1>
-        </div>
-        {view === 'admin' ? (
-          <button className="link" onClick={logout}>Log out</button>
-        ) : (
-          <button className="link" onClick={goAdmin}>Admin</button>
-        )}
-      </header>
+  if (view === 'admin') {
+    return <AdminPanel token={token} onUnauthorized={logout} onLogout={logout} onHome={goHome} />;
+  }
 
-      {view === 'user' && <UserPanel />}
-      {view === 'login' && <LoginPanel onLoggedIn={onLoggedIn} onCancel={goHome} />}
-      {view === 'admin' && <AdminPanel token={token} onUnauthorized={logout} />}
+  // User / login: simple centered layout with a slim top bar.
+  return (
+    <div className="site">
+      <header className="site-top">
+        <div className="brand" onClick={goHome} style={{ cursor: 'pointer' }}>
+          <img src={LOGO} alt="DealVerse" className="brand-logo" />
+          <span className="brand-name">DealVerse</span>
+        </div>
+        <button className="link" onClick={goAdmin}>Admin</button>
+      </header>
+      <main className="site-main">
+        {view === 'user' && <UserPanel />}
+        {view === 'login' && <LoginPanel onLoggedIn={onLoggedIn} onCancel={goHome} />}
+      </main>
     </div>
   );
 }
@@ -214,29 +228,68 @@ function makeAuth(token, onUnauthorized) {
   };
 }
 
-function AdminPanel({ token, onUnauthorized }) {
+function AdminPanel({ token, onUnauthorized, onLogout, onHome }) {
   const authFetch = useRef(makeAuth(token, onUnauthorized)).current;
+  const [active, setActive] = useState('amazon');
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const nav = [
+    ['amazon', 'Affiliate settings', IC.tag],
+    ['telegram', 'Telegram bot', IC.send],
+    ['listeners', 'Listener channels', IC.rss],
+    ['automation', 'Automation', IC.clock],
+    ['broadcasts', 'Custom messages', IC.mega],
+    ['audit', 'Audit log', IC.list],
+  ];
+  const titles = Object.fromEntries(nav.map(([id, label]) => [id, label]));
+
+  function renderSection() {
+    switch (active) {
+      case 'amazon': return <AmazonConfig authFetch={authFetch} />;
+      case 'telegram': return <TelegramConfig authFetch={authFetch} />;
+      case 'listeners': return <ListenerConfig authFetch={authFetch} />;
+      case 'automation': return <AutomationConfig authFetch={authFetch} />;
+      case 'broadcasts': return <BroadcastConfig authFetch={authFetch} />;
+      case 'audit': return <AuditConfig authFetch={authFetch} />;
+      default: return null;
+    }
+  }
+  function go(id) { setActive(id); setMenuOpen(false); }
+
   return (
-    <>
-      <Collapsible title="Amazon affiliate config">
-        <AmazonConfig authFetch={authFetch} />
-      </Collapsible>
-      <Collapsible title="Telegram bot">
-        <TelegramConfig authFetch={authFetch} />
-      </Collapsible>
-      <Collapsible title="Listener channels">
-        <ListenerConfig authFetch={authFetch} />
-      </Collapsible>
-      <Collapsible title="Automation">
-        <AutomationConfig authFetch={authFetch} />
-      </Collapsible>
-      <Collapsible title="Custom messages">
-        <BroadcastConfig authFetch={authFetch} />
-      </Collapsible>
-      <Collapsible title="Audit log">
-        <AuditConfig authFetch={authFetch} />
-      </Collapsible>
-    </>
+    <div className="admin-shell">
+      {menuOpen && <div className="scrim" onClick={() => setMenuOpen(false)} />}
+      <aside className={`sidebar${menuOpen ? ' open' : ''}`}>
+        <div className="side-brand" onClick={onHome} style={{ cursor: 'pointer' }}>
+          <img src={LOGO} alt="DealVerse" className="side-logo" />
+          <span className="side-name">DealVerse</span>
+        </div>
+        <nav className="side-nav">
+          {nav.map(([id, label, icon]) => (
+            <a key={id} className={active === id ? 'on' : ''} onClick={() => go(id)}>
+              {icon}<span>{label}</span>
+            </a>
+          ))}
+        </nav>
+        <button className="link side-logout" onClick={onLogout}>Log out</button>
+      </aside>
+
+      <div className="admin-main">
+        <header className="admin-top">
+          <div className="admin-top-left">
+            <button className="ibtn menu-btn" onClick={() => setMenuOpen((o) => !o)} aria-label="Menu">{IC.menu}</button>
+            <div>
+              <div className="crumb">Admin <span>/</span> <b>{titles[active]}</b></div>
+              <h1 className="ptitle">{titles[active]}</h1>
+            </div>
+          </div>
+          <div className="avatar">DV</div>
+        </header>
+        <div className="admin-content">
+          <div className="card admin-card">{renderSection()}</div>
+        </div>
+      </div>
+    </div>
   );
 }
 
