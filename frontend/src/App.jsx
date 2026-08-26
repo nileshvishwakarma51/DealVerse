@@ -230,6 +230,164 @@ function AdminPanel({ token, onUnauthorized }) {
       <Collapsible title="Automation">
         <AutomationConfig authFetch={authFetch} />
       </Collapsible>
+      <Collapsible title="Custom messages">
+        <BroadcastConfig authFetch={authFetch} />
+      </Collapsible>
+      <Collapsible title="Audit log">
+        <AuditConfig authFetch={authFetch} />
+      </Collapsible>
+    </>
+  );
+}
+
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function BroadcastConfig({ authFetch }) {
+  const [items, setItems] = useState([]);
+  const [text, setText] = useState('');
+  const [pin, setPin] = useState(false);
+  const [mode, setMode] = useState('recurring'); // 'recurring' | 'once'
+  const [times, setTimes] = useState('12:00');
+  const [days, setDays] = useState([]); // empty = every day
+  const [onceAt, setOnceAt] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  async function load() {
+    const res = await authFetch('api/admin/broadcasts');
+    const data = await res.json();
+    setItems(data.broadcasts || []);
+  }
+  useEffect(() => { load().catch(() => {}); /* eslint-disable-next-line */ }, []);
+
+  function toggleDay(d) {
+    setDays((cur) => (cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d]));
+  }
+
+  async function sendNow() {
+    if (!text.trim()) return;
+    setBusy(true); setMsg(null);
+    try {
+      const res = await authFetch('api/admin/broadcasts/send-now', { method: 'POST', body: JSON.stringify({ text, pin }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Send failed.');
+      setMsg({ type: 'ok', text: `Sent to ${data.result.sent} channel(s).` });
+    } catch (e) { setMsg({ type: 'err', text: e.message }); } finally { setBusy(false); }
+  }
+
+  async function schedule() {
+    if (!text.trim()) return;
+    setBusy(true); setMsg(null);
+    const body = { text, pin, mode, enabled: true };
+    if (mode === 'once') body.onceAt = onceAt;
+    else { body.times = times.split(',').map((t) => t.trim()).filter(Boolean); body.days = days; }
+    try {
+      const res = await authFetch('api/admin/broadcasts/save', { method: 'POST', body: JSON.stringify(body) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Save failed.');
+      setItems(data.broadcasts || []);
+      setMsg({ type: 'ok', text: 'Scheduled.' });
+      setText('');
+    } catch (e) { setMsg({ type: 'err', text: e.message }); } finally { setBusy(false); }
+  }
+
+  async function remove(id) {
+    const res = await authFetch('api/admin/broadcasts/delete', { method: 'POST', body: JSON.stringify({ id }) });
+    const data = await res.json();
+    setItems(data.broadcasts || []);
+  }
+
+  return (
+    <>
+      <p className="subtitle">Send a custom message to all active channels now, or schedule it (times are IST).</p>
+      <label htmlFor="bmsg">Message</label>
+      <textarea id="bmsg" value={text} onChange={(e) => setText(e.target.value)} placeholder="🔥 Big Billion Deals — loot coming soon!" style={{ minHeight: 90 }} />
+      <label className="opt" style={{ marginTop: 10 }}>
+        <input type="checkbox" checked={pin} onChange={(e) => setPin(e.target.checked)} />
+        <span>Pin this message in the channel</span>
+      </label>
+
+      <div className="row">
+        <button onClick={sendNow} disabled={busy || !text.trim()}>Send now</button>
+      </div>
+
+      <hr className="divider" />
+      <div className="sub-title">Schedule</div>
+      <div className="toggle" style={{ marginTop: 8 }}>
+        <label className="opt"><input type="radio" checked={mode === 'recurring'} onChange={() => setMode('recurring')} /> Recurring (daily / weekly)</label>
+        <label className="opt"><input type="radio" checked={mode === 'once'} onChange={() => setMode('once')} /> Once (specific date & time)</label>
+      </div>
+
+      {mode === 'recurring' ? (
+        <>
+          <label htmlFor="btimes" style={{ marginTop: 12 }}>Times (IST, comma-separated)</label>
+          <input id="btimes" type="text" value={times} onChange={(e) => setTimes(e.target.value)} placeholder="12:00, 18:00" />
+          <p className="meta" style={{ marginTop: 10 }}>Days (none = every day):</p>
+          <div className="auto-row">
+            {WEEKDAYS.map((w, i) => (
+              <label key={i} className="opt" style={{ fontWeight: 400 }}>
+                <input type="checkbox" checked={days.includes(i)} onChange={() => toggleDay(i)} /> {w}
+              </label>
+            ))}
+          </div>
+        </>
+      ) : (
+        <>
+          <label htmlFor="bonce" style={{ marginTop: 12 }}>Date & time (IST)</label>
+          <input id="bonce" type="datetime-local" value={onceAt} onChange={(e) => setOnceAt(e.target.value)} />
+        </>
+      )}
+
+      <div className="row">
+        <button onClick={schedule} disabled={busy || !text.trim()}>Schedule</button>
+        {msg && <span className={`status ${msg.type}`}>{msg.text}</span>}
+      </div>
+
+      {items.length > 0 && <div className="sub-title" style={{ marginTop: 20 }}>Scheduled</div>}
+      {items.map((b) => (
+        <div key={b.id} className="listrow">
+          <span>
+            <div>{(b.text || '').slice(0, 60)}{b.text && b.text.length > 60 ? '…' : ''}</div>
+            <div className="meta">
+              {b.mode === 'once' ? `once @ ${b.onceAt || '?'}` : `${(b.times || []).join(', ')} ${b.days && b.days.length ? b.days.map((d) => WEEKDAYS[d]).join('/') : 'daily'}`}
+              {b.pin ? ' · pinned' : ''}{b.enabled ? '' : ' · done'}
+            </div>
+          </span>
+          <button className="link danger" onClick={() => remove(b.id)}>delete</button>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function AuditConfig({ authFetch }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const res = await authFetch('api/admin/audit');
+      const data = await res.json();
+      setItems(data.audit || []);
+    } finally { setLoading(false); }
+  }
+  useEffect(() => { load().catch(() => setLoading(false)); /* eslint-disable-next-line */ }, []);
+
+  return (
+    <>
+      <p className="subtitle">Recent activity (kept 2 days). Cron runs, bot/website links, and custom messages.</p>
+      <div className="row" style={{ marginTop: 0 }}>
+        <button className="secondary" onClick={load} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
+      </div>
+      {!loading && items.length === 0 && <p className="meta">No activity yet.</p>}
+      {items.map((a, i) => (
+        <div key={i} className="audit-row">
+          <span className={`badge audit-${a.type}`}>{a.type}</span>
+          <span className="audit-msg">{a.message}</span>
+          <span className="meta audit-time">{a.at ? new Date(a.at).toLocaleString() : ''}</span>
+        </div>
+      ))}
     </>
   );
 }
@@ -445,6 +603,10 @@ function TelegramConfig({ authFetch }) {
     await authFetch('api/admin/telegram/channel/auto-publish', { method: 'POST', body: JSON.stringify({ id, autoPublish }) });
     load();
   }
+  async function toggleActive(id, active) {
+    await authFetch('api/admin/telegram/channel/active', { method: 'POST', body: JSON.stringify({ id, active }) });
+    load();
+  }
 
   const configured = tg && tg.configured;
 
@@ -474,18 +636,28 @@ function TelegramConfig({ authFetch }) {
             <>
               <label>Channels</label>
               {(tg.channels || []).length === 0 && <p className="meta">No channels yet.</p>}
-              {(tg.channels || []).map((c) => (
-                <div key={c.id} className="listrow">
-                  <span>{c.title} <span className="meta">({c.id})</span></span>
-                  <span className="rowactions">
-                    <label className="opt" style={{ fontWeight: 400 }} title="Auto-post user/website links to this channel">
-                      <input type="checkbox" checked={!!c.autoPublish} onChange={(e) => toggleAuto(c.id, e.target.checked)} />
-                      <span className="meta">auto-post user links</span>
-                    </label>
-                    <button className="link" onClick={() => removeChannel(c.id)}>remove</button>
-                  </span>
-                </div>
-              ))}
+              {(tg.channels || []).map((c) => {
+                const active = c.active !== false;
+                return (
+                  <div key={c.id} className="listrow">
+                    <span>
+                      {c.title} <span className="meta">({c.id})</span>
+                      {!active && <span className="badge" style={{ marginLeft: 6 }}>inactive</span>}
+                    </span>
+                    <span className="rowactions">
+                      <label className="opt toggle-sw" title="Master switch — inactive channels receive nothing">
+                        <input type="checkbox" checked={active} onChange={(e) => toggleActive(c.id, e.target.checked)} />
+                        <span>{active ? 'Active' : 'Off'}</span>
+                      </label>
+                      <label className="opt" style={{ fontWeight: 400 }} title="Auto-post user/website links to this channel">
+                        <input type="checkbox" checked={!!c.autoPublish} disabled={!active} onChange={(e) => toggleAuto(c.id, e.target.checked)} />
+                        <span className="meta">auto-post user links</span>
+                      </label>
+                      <button className="link" onClick={() => removeChannel(c.id)}>remove</button>
+                    </span>
+                  </div>
+                );
+              })}
               <div className="row">
                 <button className="secondary" onClick={() => setShowChannelModal(true)}>Add channel</button>
                 <button className="link" onClick={removeBot}>Remove bot</button>

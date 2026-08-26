@@ -18,6 +18,8 @@ export class DealverseStack extends Stack {
       partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: RemovalPolicy.DESTROY,
+      // Audit-log items carry a `ttl` epoch so DynamoDB auto-expires them.
+      timeToLiveAttribute: 'ttl',
     });
 
     const helloFn = new lambda.Function(this, 'HelloFunction', {

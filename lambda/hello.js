@@ -23,12 +23,21 @@ const {
   removeChannel,
   clearLastChannel,
   setChannelAutoPublish,
+  setChannelActive,
   publishToChannels,
   publishAuto,
   processUpdate,
   maskTelegram,
   formatAffiliateMessage,
 } = require('./lib/telegram');
+const { logAudit, listAudit } = require('./lib/audit');
+const {
+  getBroadcasts,
+  saveBroadcast,
+  deleteBroadcast,
+  sendNow,
+  runBroadcasts,
+} = require('./lib/broadcast');
 const {
   parseUsername,
   fetchMessages,
@@ -162,10 +171,13 @@ function selfBaseUrl(event) {
 }
 
 exports.handler = async (event) => {
-  // EventBridge scheduled tick (no HTTP context) → run listener automation.
+  // EventBridge scheduled tick (no HTTP context) → run listener automation and
+  // evaluate scheduled custom messages.
   if (!event.httpMethod && !event.requestContext) {
     try {
-      return await runAutomation('schedule');
+      const auto = await runAutomation('schedule');
+      const bc = await runBroadcasts();
+      return { auto, broadcasts: bc };
     } catch (err) {
       return { error: err.message };
     }
@@ -309,6 +321,49 @@ exports.handler = async (event) => {
       return respond(200, { success: true, telegram: maskTelegram(cfg) });
     }
 
+    // ── Admin: activate/deactivate a channel (protected) ──────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/telegram/channel/active')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { id, active } = parseBody(event);
+      const cfg = await setChannelActive(id, active);
+      return respond(200, { success: true, telegram: maskTelegram(cfg) });
+    }
+
+    // ── Admin: audit log (protected) ──────────────────────────────────────
+    if (method === 'GET' && reqPath.endsWith('/api/admin/audit')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      return respond(200, { success: true, audit: await listAudit(60) });
+    }
+
+    // ── Admin: broadcasts list (protected) ────────────────────────────────
+    if (method === 'GET' && reqPath.endsWith('/api/admin/broadcasts')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      return respond(200, { success: true, broadcasts: await getBroadcasts() });
+    }
+
+    // ── Admin: save a broadcast (protected) ───────────────────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/broadcasts/save')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const items = await saveBroadcast(parseBody(event));
+      return respond(200, { success: true, broadcasts: items });
+    }
+
+    // ── Admin: delete a broadcast (protected) ─────────────────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/broadcasts/delete')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { id } = parseBody(event);
+      const items = await deleteBroadcast(id);
+      return respond(200, { success: true, broadcasts: items });
+    }
+
+    // ── Admin: send a custom message now (protected) ──────────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/broadcasts/send-now')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { text, pin } = parseBody(event);
+      const result = await sendNow(text, pin);
+      return respond(200, { success: true, result });
+    }
+
     // ── Admin: list listener channels (protected) ────────────────────────
     if (method === 'GET' && reqPath.endsWith('/api/admin/listener')) {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
@@ -409,6 +464,7 @@ exports.handler = async (event) => {
         return respond(400, { success: false, error: 'Paste an Amazon product link.' });
       }
       const result = await generateAmazonLink(url.trim());
+      await logAudit('website', `Website generated affiliate link (${result.asin || 'page'}).`);
       // Publish to channels that opted in to user/website-generated links.
       try {
         await publishAuto(formatAffiliateMessage(result));

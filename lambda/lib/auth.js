@@ -4,7 +4,7 @@
 // base64(secret). Secret is hardcoded to "abc" (overridable via env).
 const crypto = require('crypto');
 
-const ADMIN_SECRET = process.env.ADMIN_SECRET || 'poras860';
+const ADMIN_SECRET = process.env.ADMIN_SECRET || '1234';
 
 function expectedToken() {
   return Buffer.from(ADMIN_SECRET, 'utf8').toString('base64');

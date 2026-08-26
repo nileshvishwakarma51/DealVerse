@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { ApiError } = require('./errors');
 const { getConfig, setConfig } = require('./store');
 const { generateAmazonLink } = require('./affiliate');
+const { logAudit } = require('./audit');
 
 const TELEGRAM_KEY = 'telegram';
 const API_BASE = 'https://api.telegram.org';
@@ -142,8 +143,20 @@ async function addChannel(id, title) {
   cfg.channels.push({
     id: channelId,
     title: title || channelId,
+    active: prev ? prev.active !== false : true,
     autoPublish: prev ? !!prev.autoPublish : false,
   });
+  await setConfig(TELEGRAM_KEY, cfg);
+  return cfg;
+}
+
+// Master on/off for a channel. Inactive channels receive nothing from us.
+async function setChannelActive(id, active) {
+  const cfg = await getConfig(TELEGRAM_KEY);
+  if (!cfg || !cfg.token) throw new ApiError(400, 'Connect a bot first.');
+  cfg.channels = (cfg.channels || []).map((c) =>
+    String(c.id) === String(id) ? { ...c, active: !!active } : c
+  );
   await setConfig(TELEGRAM_KEY, cfg);
   return cfg;
 }
@@ -177,16 +190,33 @@ async function removeChannel(id) {
   return cfg;
 }
 
+function pinMessage(token, chatId, messageId) {
+  return tgCall(token, 'pinChatMessage', {
+    chat_id: chatId,
+    message_id: messageId,
+    disable_notification: true,
+  });
+}
+
 // Publish text to configured channels using the stored bot. Best-effort.
-// `autoOnly` restricts to channels with the auto-publish toggle on.
-async function publishToChannels(text, { autoOnly = false } = {}) {
+// Inactive channels are always skipped; `autoOnly` further restricts to
+// channels with auto-publish on. `pin` pins the message in each channel.
+async function publishToChannels(text, { autoOnly = false, pin = false } = {}) {
   const cfg = await getConfig(TELEGRAM_KEY);
   if (!cfg || !cfg.token || !(cfg.channels || []).length) return 0;
-  const targets = autoOnly ? cfg.channels.filter((c) => c.autoPublish) : cfg.channels;
+  let targets = cfg.channels.filter((c) => c.active !== false); // active only
+  if (autoOnly) targets = targets.filter((c) => c.autoPublish);
   let sent = 0;
   for (const ch of targets) {
     try {
-      await sendMessage(cfg.token, ch.id, text);
+      const res = await sendMessage(cfg.token, ch.id, text);
+      if (pin && res && res.message_id) {
+        try {
+          await pinMessage(cfg.token, ch.id, res.message_id);
+        } catch {
+          /* pin may fail if bot lacks pin rights */
+        }
+      }
       sent++;
     } catch {
       /* skip a failing channel */
@@ -195,7 +225,7 @@ async function publishToChannels(text, { autoOnly = false } = {}) {
   return sent;
 }
 
-// Auto-publish (only channels with the toggle on) — for user/website links.
+// Auto-publish (only active channels with the toggle on) — for user/website links.
 const publishAuto = (text) => publishToChannels(text, { autoOnly: true });
 
 function extractUrl(text) {
@@ -271,6 +301,7 @@ async function processUpdate(update) {
       const result = await generateAmazonLink(url);
       const reply = formatAffiliateMessage(result);
       await sendMessage(token, chatId, reply);
+      await logAudit('bot', `@${fromName} generated affiliate link (${result.asin || 'page'}).`);
       // Also publish to channels that opted in to user-generated links.
       await publishAuto(reply);
     } catch (err) {
@@ -293,6 +324,7 @@ module.exports = {
   removeChannel,
   clearLastChannel,
   setChannelAutoPublish,
+  setChannelActive,
   publishToChannels,
   publishAuto,
   processUpdate,

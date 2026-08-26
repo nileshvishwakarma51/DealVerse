@@ -8,6 +8,7 @@ const { getConfig, setConfig } = require('./store');
 const { getListeners, saveListeners, fetchAmazonMessages, allAmazonLinks } = require('./listener');
 const { generateAmazonLink } = require('./affiliate');
 const { publishToChannels } = require('./telegram');
+const { logAudit } = require('./audit');
 
 const AUTOMATION_KEY = 'automation'; // holds only the run lock + last summary
 const MAX_RUN_MS = 4 * 60 * 1000;
@@ -89,7 +90,9 @@ async function runAutomation(trigger) {
   try {
     for (const l of due) {
       ran++;
-      posted += await processListener(l); // mutates l (a ref into items)
+      const p = await processListener(l); // mutates l (a ref into items)
+      posted += p;
+      await logAudit('cron', `Read @${l.username} (${l.count || 5} latest) → posted ${p} new deal(s).`);
     }
     await saveListeners(items);
     a.lastResult = { trigger, ran, posted, at: new Date().toISOString() };
