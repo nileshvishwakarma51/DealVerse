@@ -11,8 +11,9 @@
     "synth": "cdk synth",
     "fe:install": "npm --prefix frontend install",
     "fe:build": "npm --prefix frontend run build && node scripts/copy-fe.js",
-    "deploy": "npm run fe:build && cdk deploy",
-    "deploy:infra": "cdk deploy",
+    "lambda:install": "node scripts/package-lambda.js",
+    "deploy": "npm run fe:build && npm run lambda:install && cdk deploy",
+    "deploy:infra": "npm run lambda:install && cdk deploy",
     "destroy": "cdk destroy"
   },
   "devDependencies": {

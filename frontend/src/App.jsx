@@ -520,6 +520,8 @@ function AmazonConfig({ authFetch }) {
   const [curlSave, setCurlSave] = useState(null);
   const [savingAmazon, setSavingAmazon] = useState(false);
   const [savingCurl, setSavingCurl] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testMsg, setTestMsg] = useState(null);
 
   async function loadConfig() {
     const res = await authFetch('api/admin/config');
@@ -550,6 +552,23 @@ function AmazonConfig({ authFetch }) {
     }
   }
 
+  async function testSession() {
+    setTesting(true);
+    setTestMsg(null);
+    try {
+      const res = await authFetch('api/admin/amazon/sitestripe/test', { method: 'POST', body: '{}' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Test failed.');
+      if (data.sitestripe) setStatus(data.sitestripe);
+      const r = data.result || {};
+      setTestMsg(r.working ? { type: 'ok', text: 'Session works ✅' } : { type: 'err', text: `${r.expired ? 'Session expired' : 'Not working'} — ${r.error}` });
+    } catch (err) {
+      setTestMsg({ type: 'err', text: err.message });
+    } finally {
+      setTesting(false);
+    }
+  }
+
   async function saveCurl() {
     setSavingCurl(true);
     setCurlSave(null);
@@ -567,8 +586,18 @@ function AmazonConfig({ authFetch }) {
     }
   }
 
+  const sessionExpired = status && status.configured && status.status === 'expired';
+
   return (
     <>
+      {sessionExpired && (
+        <div className="banner-warn">
+          ⚠ Your SiteStripe session has expired — links are falling back to your affiliate <strong>tag</strong>
+          (longer URLs, not <code>link.amazon</code>). Paste a fresh SiteStripe cURL below to restore it.
+          {status.expiredAt ? <span className="meta"> (since {new Date(status.expiredAt).toLocaleString()})</span> : null}
+        </div>
+      )}
+
       <p className="subtitle">Choose how affiliate links are generated.</p>
 
       <label>Mode</label>
@@ -600,10 +629,26 @@ function AmazonConfig({ authFetch }) {
         <div className="statusbox">
           {status && status.configured ? (
             <>
-              <div><strong>Session configured</strong></div>
+              <div>
+                <strong>Session configured</strong>{' '}
+                {status.status === 'expired'
+                  ? <span className="badge" style={{ background: 'rgba(248,113,113,.14)', color: 'var(--red)', borderColor: 'rgba(248,113,113,.4)', marginLeft: 4 }}>expired</span>
+                  : <span className="badge ok" style={{ marginLeft: 4 }}>active</span>}
+              </div>
+              {status.status === 'expired' && (
+                <div className="status err" style={{ marginTop: 6 }}>
+                  ⚠ This SiteStripe session has expired — paste a fresh cURL below.
+                  {status.expiredAt ? ` (since ${new Date(status.expiredAt).toLocaleString()})` : ''}
+                </div>
+              )}
               <div className="meta">endpoint: {status.endpoint}</div>
               <div className="meta">cookies: {status.hasCookies ? `${status.cookieCount} present` : 'none'}</div>
               {status.configuredAt && <div className="meta">saved: {new Date(status.configuredAt).toLocaleString()}</div>}
+              {status.testedAt && <div className="meta">last tested: {new Date(status.testedAt).toLocaleString()}</div>}
+              <div className="row" style={{ marginTop: 10 }}>
+                <button className="secondary" onClick={testSession} disabled={testing}>{testing ? 'Testing…' : 'Test session'}</button>
+                {testMsg && <span className={`status ${testMsg.type}`}>{testMsg.text}</span>}
+              </div>
             </>
           ) : (
             <div className="meta">No session configured yet.</div>
@@ -995,9 +1040,13 @@ function ListenerConfig({ authFetch }) {
   return (
     <>
       <p className="subtitle">
-        Read public channels (no login) and re-publish their Amazon deals with your affiliate link.
+        Read Telegram channels and re-publish their Amazon deals with your affiliate link. Public channels
+        work with no setup; for private groups / preview-disabled channels, set up logged-in access below.
       </p>
 
+      <MtprotoAccess authFetch={authFetch} />
+
+      <div className="sub-title" style={{ marginTop: 20 }}>Channels</div>
       {listeners.length === 0 && <p className="meta">No listener channels yet.</p>}
       {listeners.map((c) => (
         <ListenerRow
@@ -1050,7 +1099,10 @@ function ListenerRow({ channel, onOpen, onRemove, onSaveAutomation }) {
     <div className="listener-card">
       <div className="listener-head" onClick={() => setOpen((o) => !o)}>
         <div>
-          <strong>{channel.title}</strong> <span className="meta">@{channel.username}</span>
+          <strong>{channel.title}</strong> <span className="meta">@{channel.username}</span>{' '}
+          <span className="badge" style={{ marginLeft: 2 }}>
+            {channel.source === 'mtproto' ? 'logged-in' : 'public'}
+          </span>
           <div className="meta">
             {auto ? `auto · every ${intervalMin || 0} min · ${count} msgs` : 'auto off'}
           </div>
@@ -1127,7 +1179,10 @@ function AddListenerModal({ authFetch, onClose, onSaved }) {
     setBusy(true);
     setError(null);
     try {
-      const res = await authFetch('api/admin/listener/add', { method: 'POST', body: JSON.stringify({ channel, title }) });
+      const res = await authFetch('api/admin/listener/add', {
+        method: 'POST',
+        body: JSON.stringify({ channel, title, source: preview && preview.source }),
+      });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Save failed.');
       onSaved();
@@ -1140,8 +1195,11 @@ function AddListenerModal({ authFetch, onClose, onSaved }) {
 
   return (
     <Modal title="Add listener channel" onClose={onClose}>
-      <p className="subtitle">Enter a public channel (@username or t.me link), then test-read it.</p>
-      <label htmlFor="ch">Channel</label>
+      <p className="subtitle">
+        Enter a channel or group (@username or t.me link), then test-read it. Public channels read directly;
+        groups / private channels use your logged-in Telegram access (set up above).
+      </p>
+      <label htmlFor="ch">Channel / group</label>
       <input id="ch" type="text" value={channel} onChange={(e) => setChannel(e.target.value)} placeholder="https://t.me/FLTlooters or @FLTlooters" />
       <div className="row">
         <button className="secondary" onClick={test} disabled={busy || channel.trim() === ''}>{busy ? 'Reading…' : 'Test read'}</button>
@@ -1151,9 +1209,14 @@ function AddListenerModal({ authFetch, onClose, onSaved }) {
       {preview && (
         <>
           <div className="statusbox">
-            <div><strong>@{preview.username}</strong> — last {preview.messages.length} messages</div>
+            <div>
+              <strong>@{preview.username}</strong> — last {preview.messages.length} messages{' '}
+              <span className={`badge ${preview.source === 'mtproto' ? '' : 'ok'}`} style={{ marginLeft: 4 }}>
+                {preview.source === 'mtproto' ? 'via logged-in access' : 'public'}
+              </span>
+            </div>
             {preview.messages.map((m) => (
-              <div key={m.id} className="meta" style={{ marginTop: 6 }}>• {m.text.slice(0, 90) || '(no text)'}</div>
+              <div key={m.id} className="meta" style={{ marginTop: 6 }}>• {(m.text || '').slice(0, 90) || '(no text)'}</div>
             ))}
           </div>
           <label htmlFor="lt">Title</label>
@@ -1289,6 +1352,303 @@ function ListenerMessagesModal({ authFetch, channel, limit, onClose }) {
               </div>
             );
           })}
+          {msgHasAffiliate(m) && (
+            <div className="row">
+              <button className="secondary" onClick={() => sendToChannel(m)} disabled={sent[m.id] === 'sending' || sent[m.id] === 'ok'}>
+                {sent[m.id] === 'ok' ? 'Sent ✅' : sent[m.id] === 'sending' ? 'Sending…' : 'Send to channel'}
+              </button>
+              {typeof sent[m.id] === 'string' && sent[m.id] !== 'ok' && sent[m.id] !== 'sending' && (
+                <span className="status err">{sent[m.id]}</span>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+    </Modal>
+  );
+}
+
+/* ─────────────────────────── MTProto (beta) ─────────────────────────── */
+
+// Replace each source link in a message with its affiliate link (shared shape
+// with the listener flow). Kept local so MTProto stays fully additive.
+function composeAffiliateText(msg) {
+  let text = msg.text || '';
+  let appended = '';
+  for (const it of msg.items || []) {
+    const aff = it.affiliate && it.affiliate.affiliateUrl;
+    if (!aff) continue;
+    if (text.includes(it.sourceUrl)) text = text.split(it.sourceUrl).join(aff);
+    else appended += `\n${aff}`;
+  }
+  return (text + appended).trim();
+}
+
+// Optional "logged-in Telegram access" — shown at the top of the Listener
+// section. Enables reading private groups / preview-disabled channels. When
+// present, listeners auto-use it; without it they read public channels only.
+function MtprotoAccess({ authFetch }) {
+  const [st, setSt] = useState(null);
+  const [apiId, setApiId] = useState('');
+  const [apiHash, setApiHash] = useState('');
+  const [savingApi, setSavingApi] = useState(false);
+  const [apiMsg, setApiMsg] = useState(null);
+  const [showLogin, setShowLogin] = useState(false);
+
+  async function load() {
+    const res = await authFetch('api/admin/mtproto');
+    const data = await res.json();
+    if (data.mtproto) {
+      setSt(data.mtproto);
+      if (data.mtproto.apiId) setApiId((v) => v || data.mtproto.apiId);
+    }
+  }
+  useEffect(() => { load().catch(() => {}); /* eslint-disable-next-line */ }, []);
+
+  async function saveApi() {
+    setSavingApi(true); setApiMsg(null);
+    try {
+      const res = await authFetch('api/admin/mtproto/api', { method: 'POST', body: JSON.stringify({ apiId, apiHash }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Save failed.');
+      setSt(data.mtproto); setApiHash(''); setApiMsg({ type: 'ok', text: 'Saved.' });
+    } catch (e) { setApiMsg({ type: 'err', text: e.message }); } finally { setSavingApi(false); }
+  }
+
+  async function logout() {
+    if (!confirm('Log the Telegram user account out and revoke its session?')) return;
+    const res = await authFetch('api/admin/mtproto/logout', { method: 'POST', body: '{}' });
+    const data = await res.json();
+    if (data.mtproto) setSt(data.mtproto);
+  }
+
+  async function clearCreds() {
+    if (!confirm('Clear ALL credentials and the session? You can then set up a different account.')) return;
+    const res = await authFetch('api/admin/mtproto/clear', { method: 'POST', body: '{}' });
+    const data = await res.json();
+    if (data.mtproto) { setSt(data.mtproto); setApiId(''); setApiHash(''); setApiMsg(null); }
+  }
+
+  const apiConfigured = st && st.apiConfigured;
+  const loggedIn = st && st.loggedIn;
+  const summary = loggedIn
+    ? `logged in${st.user && st.user.username ? ' · @' + st.user.username : ''}`
+    : apiConfigured ? 'credentials saved · not logged in' : 'not set up';
+
+  return (
+    <Collapsible title={`Logged-in Telegram access — ${summary}`} bare>
+      <p className="subtitle">
+        <span className="badge">beta · optional</span> Not required. Without it, listeners read only
+        <strong> public channels</strong> with a t.me preview. Log in with a Telegram <strong>user account</strong>
+        (a member of the groups) to also read <strong>private groups</strong> and preview-disabled channels — then
+        the listener uses the right method automatically. Read-only; nothing is auto-posted.
+      </p>
+
+      <Collapsible title="API credentials" bare defaultOpen={!apiConfigured}>
+        <p className="subtitle">
+          Create an app at <code>my.telegram.org → API development tools</code> for an <code>api_id</code> and
+          <code> api_hash</code>. The api_hash is stored securely and never shown again. (You can create these on
+          any account — the phone login below is what actually reads.)
+        </p>
+        <div className="statusbox">
+          {apiConfigured
+            ? <div className="meta">api_id <strong>{st.apiId}</strong> · api_hash saved ✅</div>
+            : <div className="meta">Not configured yet.</div>}
+        </div>
+        <label htmlFor="mapi">api_id</label>
+        <input id="mapi" type="text" value={apiId} onChange={(e) => setApiId(e.target.value)} placeholder="1234567" />
+        <label htmlFor="mhash" style={{ marginTop: 12 }}>api_hash</label>
+        <input id="mhash" type="password" value={apiHash} onChange={(e) => setApiHash(e.target.value)}
+          placeholder={apiConfigured ? '•••••••• (saved — enter to replace)' : '0123456789abcdef0123456789abcdef'} />
+        <div className="row">
+          <button onClick={saveApi} disabled={savingApi || apiId.trim() === '' || apiHash.trim() === ''}>
+            {savingApi ? 'Saving…' : 'Save credentials'}
+          </button>
+          {apiMsg && <span className={`status ${apiMsg.type}`}>{apiMsg.text}</span>}
+        </div>
+      </Collapsible>
+
+      <div className="sub-title" style={{ marginTop: 20 }}>Account</div>
+      <div className="statusbox">
+        {loggedIn ? (
+          <>
+            <div>
+              <strong>{st.user && (st.user.firstName || st.user.username || 'Logged in')}</strong>
+              {st.user && st.user.username ? <span className="meta"> · @{st.user.username}</span> : null}
+              <span className="badge ok" style={{ marginLeft: 6 }}>logged in</span>
+            </div>
+            {st.user && st.user.phone && <div className="meta">phone: {st.user.phone}</div>}
+            {st.loggedInAt && <div className="meta">since: {new Date(st.loggedInAt).toLocaleString()}</div>}
+          </>
+        ) : (
+          <div className="meta">
+            Not logged in.{st && st.awaitingCode ? ` A login code was requested for ${st.pendingPhone || 'your number'} — continue login to enter it.` : ''}
+          </div>
+        )}
+      </div>
+      <div className="row">
+        {!loggedIn && (
+          <button disabled={!apiConfigured} onClick={() => setShowLogin(true)} title={apiConfigured ? '' : 'Save API credentials first'}>
+            {st && st.awaitingCode ? 'Continue login' : 'Log in with phone'}
+          </button>
+        )}
+        {loggedIn && <button className="link danger" onClick={logout}>Log out</button>}
+        {(apiConfigured || loggedIn || (st && st.awaitingCode)) && (
+          <button className="link danger" onClick={clearCreds}>Clear credentials</button>
+        )}
+      </div>
+
+      {showLogin && (
+        <MtprotoLoginModal
+          authFetch={authFetch}
+          onClose={() => setShowLogin(false)}
+          onDone={() => { setShowLogin(false); load(); }}
+        />
+      )}
+    </Collapsible>
+  );
+}
+
+function MtprotoLoginModal({ authFetch, onClose, onDone }) {
+  const [step, setStep] = useState(1); // 1 = phone, 2 = code (+2fa)
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+  const [password, setPassword] = useState('');
+  const [needPassword, setNeedPassword] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+
+  // If a code was already requested in a previous session, jump straight to step 2.
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await authFetch('api/admin/mtproto');
+        const data = await res.json();
+        if (data.mtproto && data.mtproto.awaitingCode) setStep(2);
+      } catch { /* ignore */ }
+    })();
+  }, [authFetch]);
+
+  async function sendCode() {
+    setBusy(true); setError(null);
+    try {
+      const res = await authFetch('api/admin/mtproto/send-code', { method: 'POST', body: JSON.stringify({ phone }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Could not send code.');
+      setStep(2);
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+
+  async function signIn() {
+    setBusy(true); setError(null);
+    try {
+      const res = await authFetch('api/admin/mtproto/sign-in', { method: 'POST', body: JSON.stringify({ code, password }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        // 401 with a 2FA prompt → reveal the password field and let them retry.
+        if (res.status === 401 && /two-step|password/i.test(data.error || '')) {
+          setNeedPassword(true);
+          throw new Error(data.error || 'Enter your two-step verification password.');
+        }
+        throw new Error(data.error || 'Sign in failed.');
+      }
+      onDone();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title="Log in with a Telegram account" onClose={onClose}>
+      {step === 1 && (
+        <>
+          <p className="subtitle">Step 1 — enter the phone number of the account. Telegram will send it a login code.</p>
+          <label htmlFor="mp">Phone (international)</label>
+          <input id="mp" type="text" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+9198XXXXXXXX" autoFocus />
+          {error && <p className="status err">{error}</p>}
+          <div className="row">
+            <button onClick={sendCode} disabled={busy || phone.trim() === ''}>{busy ? 'Sending…' : 'Send code'}</button>
+          </div>
+        </>
+      )}
+      {step === 2 && (
+        <>
+          <p className="subtitle">Step 2 — enter the login code Telegram sent (in the app / SMS). Add your two-step password only if prompted.</p>
+          <label htmlFor="mc">Login code</label>
+          <input id="mc" type="text" value={code} onChange={(e) => setCode(e.target.value)} placeholder="12345" autoFocus />
+          {needPassword && (
+            <>
+              <label htmlFor="m2fa" style={{ marginTop: 12 }}>Two-step verification password</label>
+              <input id="m2fa" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            </>
+          )}
+          {error && <p className="status err">{error}</p>}
+          <div className="row">
+            <button onClick={signIn} disabled={busy || code.trim() === ''}>{busy ? 'Signing in…' : 'Sign in'}</button>
+            <button className="secondary" onClick={() => { setStep(1); setError(null); }}>Back</button>
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
+function MtprotoMessagesModal({ authFetch, peer, limit, onClose }) {
+  const [loading, setLoading] = useState(true);
+  const [messages, setMessages] = useState([]);
+  const [error, setError] = useState(null);
+  const [sent, setSent] = useState({}); // id -> 'sending' | 'ok' | error string
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await authFetch('api/admin/mtproto/messages', { method: 'POST', body: JSON.stringify({ peer, limit }) });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error || 'Could not read messages.');
+        if (alive) setMessages(data.messages || []);
+      } catch (err) {
+        if (alive) setError(err.message);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [authFetch, peer, limit]);
+
+  function msgHasAffiliate(msg) {
+    return (msg.items || []).some((it) => it.affiliate && it.affiliate.affiliateUrl);
+  }
+
+  async function sendToChannel(msg) {
+    if (!msgHasAffiliate(msg)) return;
+    setSent((s) => ({ ...s, [msg.id]: 'sending' }));
+    try {
+      // Re-uses the EXISTING bot publish path (same as the listener feature).
+      const res = await authFetch('api/admin/listener/publish', { method: 'POST', body: JSON.stringify({ text: composeAffiliateText(msg) }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Publish failed.');
+      setSent((s) => ({ ...s, [msg.id]: 'ok' }));
+    } catch (err) {
+      setSent((s) => ({ ...s, [msg.id]: err.message }));
+    }
+  }
+
+  return (
+    <Modal title={`${peer} — last ${limit} messages`} onClose={onClose}>
+      {loading && <p className="meta">Reading messages and generating affiliate links…</p>}
+      {error && <p className="status err">{error}</p>}
+      {!loading && messages.length === 0 && !error && <p className="meta">No messages found.</p>}
+      {!loading && messages.map((m) => (
+        <div key={m.id} className="msgcard">
+          <div className="msgtext">{m.text || '(no text)'}</div>
+          {(m.items || []).map((it, i) => (
+            <div key={i} className="linkitem">
+              {it.affiliate && it.affiliate.affiliateUrl ? (
+                <a className="affiliate" href={it.affiliate.affiliateUrl} target="_blank" rel="noreferrer">{it.affiliate.affiliateUrl}</a>
+              ) : (
+                <span className="meta">⚠ {(it.affiliate && it.affiliate.error) || 'Could not convert'} — {it.sourceUrl}</span>
+              )}
+            </div>
+          ))}
           {msgHasAffiliate(m) && (
             <div className="row">
               <button className="secondary" onClick={() => sendToChannel(m)} disabled={sent[m.id] === 'sending' || sent[m.id] === 'ok'}>

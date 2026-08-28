@@ -9,6 +9,8 @@ const { getListeners, saveListeners, fetchAmazonMessages, allAmazonLinks } = req
 const { generateAmazonLink } = require('./affiliate');
 const { publishToChannels } = require('./telegram');
 const { logAudit } = require('./audit');
+// Safe to require (dependency-free at load; GramJS is lazy-loaded inside).
+const mtproto = require('./mtproto');
 
 const AUTOMATION_KEY = 'automation'; // holds only the run lock + last summary
 const MAX_RUN_MS = 4 * 60 * 1000;
@@ -33,7 +35,12 @@ function composeMessage(text, items) {
 
 async function processListener(l) {
   const count = Math.min(Math.max(l.count || 5, 1), 20);
-  const msgs = await fetchAmazonMessages(l.username, count);
+  // Dispatch by source: public channels via the t.me reader, groups/private via
+  // the logged-in MTProto account. Both return {numId, text, links}.
+  const msgs =
+    l.source === 'mtproto'
+      ? await mtproto.fetchRaw(l.username, count)
+      : await fetchAmazonMessages(l.username, count);
   const prev = l.lastProcessed || 0;
   const fresh = msgs.filter((m) => m.numId > prev).sort((x, y) => x.numId - y.numId);
   let maxId = prev;
@@ -90,9 +97,14 @@ async function runAutomation(trigger) {
   try {
     for (const l of due) {
       ran++;
-      const p = await processListener(l); // mutates l (a ref into items)
-      posted += p;
-      await logAudit('cron', `Read @${l.username} (${l.count || 5} latest) → posted ${p} new deal(s).`);
+      try {
+        const p = await processListener(l); // mutates l (a ref into items)
+        posted += p;
+        await logAudit('cron', `Read @${l.username} (${l.count || 5} latest) → posted ${p} new deal(s).`);
+      } catch (err) {
+        // One listener failing (e.g. MTProto flood/offline) must not abort the run.
+        await logAudit('cron', `@${l.username} skipped: ${err.message}`);
+      }
     }
     await saveListeners(items);
     a.lastResult = { trigger, ran, posted, at: new Date().toISOString() };

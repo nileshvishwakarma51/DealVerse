@@ -11,7 +11,7 @@ const LISTENERS_KEY = 'listeners';
 const TIMEOUT_MS = 10000;
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-const AMAZONISH = /(?:amazon\.[a-z.]+|amzn\.[a-z]+|link\.amazon|a\.co)\//i;
+const AMAZONISH = /(?:amazon\.[a-z.]+|amzn\.[a-z]+|link\.amazon|amznn\.cc|a\.co)\//i;
 
 function decodeEntities(s) {
   return String(s || '')
@@ -161,13 +161,34 @@ async function saveListeners(items) {
   return items;
 }
 
-async function addListener(username, title) {
+// True when t.me/s/<username> is a public CHANNEL with a readable message
+// preview (vs a group / private / preview-disabled handle, which has none).
+async function probePublic(username) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(`https://t.me/s/${username}`, {
+      headers: { 'user-agent': BROWSER_UA },
+      signal: controller.signal,
+    });
+    if (!res.ok) return false;
+    const html = await res.text();
+    return /tgme_widget_message\b|tgme_channel_info\b/.test(html);
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function addListener(username, title, source) {
   const items = await getListeners();
   const prev = items.find((c) => c.username.toLowerCase() === username.toLowerCase());
   const next = items.filter((c) => c.username.toLowerCase() !== username.toLowerCase());
   next.push({
     username,
     title: title || username,
+    source: source === 'mtproto' ? 'mtproto' : (prev && prev.source) || 'public',
     auto: prev ? !!prev.auto : false,
     intervalMinutes: prev ? prev.intervalMinutes || 60 : 60,
     count: prev ? prev.count || 5 : 5,
@@ -216,6 +237,7 @@ module.exports = {
   allAmazonLinks,
   getListeners,
   saveListeners,
+  probePublic,
   addListener,
   removeListener,
   setListenerAutomation,

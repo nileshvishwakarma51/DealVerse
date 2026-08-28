@@ -50,6 +50,14 @@ function isShortLink(host) {
   return SHORT_LINK_HOSTS.has(String(host).toLowerCase());
 }
 
+// Third-party deal shorteners that wrap an Amazon link (redirect chain and/or an
+// embedded ?url= param). Resolved by following redirects + extracting the
+// embedded Amazon URL (see amazon.js resolveDeepLink).
+const DEEP_LINK_HOSTS = new Set(['amznn.cc', 'www.amznn.cc']);
+function isDeepLink(host) {
+  return DEEP_LINK_HOSTS.has(String(host).toLowerCase());
+}
+
 // Tokenizer: handles \-newline continuations, '...' (literal), "..." (escapes),
 // and bare tokens.
 function tokenize(input) {
@@ -242,4 +250,5 @@ module.exports = {
   validateSiteStripeEndpoint,
   isAmazonHost,
   isShortLink,
+  isDeepLink,
 };

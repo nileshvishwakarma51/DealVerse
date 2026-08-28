@@ -176,4 +176,17 @@ label { display: block; font-size: .82rem; font-weight: 600; color: var(--ink-so
 .msgtext { font-size: .85rem; white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 8px; color: var(--ink-soft); }
 .linkitem { padding: 8px 0; border-top: 1px solid var(--border); }
 
+.banner-warn {
+  border: 1px solid rgba(248,113,113,.45);
+  background: rgba(248,113,113,.10);
+  color: #fecaca;
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  font-size: .9rem;
+  line-height: 1.5;
+}
+.banner-warn code { background: rgba(0,0,0,.25); color: inherit; }
+.banner-warn .meta { color: #fca5a5; display: block; margin-top: 4px; }
+
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

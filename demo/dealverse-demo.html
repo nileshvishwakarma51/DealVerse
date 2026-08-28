@@ -1,0 +1,376 @@
+<title>DealVerse Console</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
+
+<style>
+  :root {
+    --bg: #070a12; --bg-2: #0b1020; --surface: #0e1424; --surface-2: #121a2e;
+    --ink: #eaf1fb; --ink-soft: #c3ccdb; --muted: #7e8ba3;
+    --border: #1c2740; --border-glow: rgba(45,212,191,.26);
+    --teal: #2dd4bf; --cyan: #22d3ee; --green: #10b981; --blue: #3b82f6;
+    --purple: #a78bfa; --orange: #fb923c; --red: #f87171;
+    --grad-teal: linear-gradient(100deg, #2dd4bf, #22d3ee 60%, #38bdf8);
+    --grad-green: linear-gradient(100deg, #10b981, #059669);
+    --grad-blue: linear-gradient(100deg, #3b82f6, #6366f1 55%, #8b5cf6);
+    --glow: 0 0 0 1px var(--border-glow), 0 20px 50px -22px rgba(45,212,191,.28);
+    --radius: 18px; --pill: 999px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Manrope", system-ui, sans-serif; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+  h1,h2,h3,h4 { font-family: "Sora", sans-serif; letter-spacing: -0.02em; margin: 0; font-weight: 700; line-height: 1.15; }
+  p { margin: 0; } a { color: inherit; text-decoration: none; }
+  .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+  [hidden] { display: none !important; }
+
+  .app { display: flex; min-height: 100vh; }
+  .sidebar { width: 258px; flex: none; padding: 24px 16px; position: sticky; top: 0; align-self: flex-start; height: 100vh; border-right: 1px solid var(--border); background: var(--bg-2); overflow-y: auto; }
+  .side-brand { display: flex; align-items: center; gap: 11px; padding: 6px 10px 22px; border-bottom: 1px solid var(--border); }
+  .side-brand .mark { width: 34px; height: 34px; border-radius: 10px; background: var(--grad-teal); display: grid; place-items: center; box-shadow: 0 8px 22px -8px rgba(45,212,191,.7); }
+  .side-brand .mark svg { width: 20px; height: 20px; }
+  .side-brand .name { font-family: "Sora"; font-weight: 800; font-size: 1.26rem; background: var(--grad-teal); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .nav { display: flex; flex-direction: column; gap: 3px; margin-top: 16px; }
+  .nav .cap { font-size: .68rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); padding: 14px 12px 6px; }
+  .nav a { display: flex; align-items: center; gap: 13px; padding: 11px 12px; border-radius: 11px; color: var(--muted); font-weight: 600; font-size: .92rem; position: relative; cursor: pointer; transition: background .15s, color .15s; }
+  .nav a svg { width: 19px; height: 19px; }
+  .nav a:hover { color: var(--ink-soft); background: rgba(255,255,255,.03); }
+  .nav a.on { color: var(--ink); background: rgba(45,212,191,.08); }
+  .nav a.on svg { color: var(--teal); }
+  .nav a.on::after { content: ""; position: absolute; right: 0; top: 22%; bottom: 22%; width: 3px; border-radius: 3px; background: var(--grad-teal); }
+
+  .main { flex: 1; min-width: 0; }
+  .topbar { position: sticky; top: 0; z-index: 40; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 34px; backdrop-filter: blur(12px); background: color-mix(in srgb, var(--bg) 74%, transparent); }
+  .crumb { font-size: .8rem; color: var(--muted); }
+  .crumb b { color: var(--ink-soft); font-weight: 600; }
+  .ptitle { font-family: "Sora"; font-weight: 800; font-size: 1.85rem; margin-top: 2px; }
+  .top-right { display: flex; align-items: center; gap: 12px; }
+  .ibtn { width: 40px; height: 40px; border-radius: 50%; background: var(--surface); border: 1px solid var(--border); display: grid; place-items: center; color: var(--ink-soft); cursor: pointer; }
+  .ibtn:hover { color: var(--teal); border-color: var(--teal); }
+  .avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--grad-blue); display: grid; place-items: center; font-weight: 700; font-size: .82rem; color: #fff; }
+  .content { padding: 12px 34px 60px; }
+  .page-inner { max-width: 900px; }
+  .page-lead { color: var(--muted); font-size: 1rem; margin: -2px 0 26px; max-width: 62ch; }
+
+  .menu-btn { display: none; }
+  @media (max-width: 980px) {
+    .sidebar { position: fixed; z-index: 80; transform: translateX(-100%); transition: transform .2s; box-shadow: var(--glow); }
+    .sidebar.open { transform: none; }
+    .menu-btn { display: grid; }
+    .ptitle { font-size: 1.4rem; } .content { padding: 12px 18px 50px; } .topbar { padding: 16px 18px; }
+  }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 18px; }
+  .stat { display: flex; align-items: center; gap: 15px; padding: 18px 20px; }
+  .stat .ic { width: 52px; height: 52px; border-radius: 50%; flex: none; display: grid; place-items: center; }
+  .stat .ic svg { width: 21px; height: 21px; }
+  .ic.teal { background: rgba(45,212,191,.13); color: var(--teal); }
+  .ic.green { background: rgba(16,185,129,.14); color: #34d399; }
+  .ic.blue { background: rgba(59,130,246,.14); color: #60a5fa; }
+  .ic.purple { background: rgba(167,139,250,.15); color: var(--purple); }
+  .ic.orange { background: rgba(251,146,60,.14); color: var(--orange); }
+  .stat .lbl { font-size: .8rem; color: var(--muted); }
+  .stat .val { font-family: "Sora"; font-weight: 800; font-size: 1.5rem; margin-top: 1px; }
+  .stat .val small { font-size: .78rem; font-weight: 600; color: #34d399; margin-left: 6px; }
+
+  .whead { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+  .whead .t { font-family: "Sora"; font-weight: 700; font-size: 1.02rem; display: flex; align-items: center; gap: 9px; }
+  .whead .t .d { width: 9px; height: 9px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 8px var(--teal); }
+  .wbody { padding: 20px; display: flex; flex-direction: column; gap: 15px; }
+  .field-group { display: flex; flex-direction: column; gap: 8px; }
+  .label { font-size: .82rem; font-weight: 600; color: var(--ink-soft); }
+  .help { font-size: .8rem; color: var(--muted); }
+  .field { border: 1px solid var(--border); border-radius: 11px; padding: 12px 14px; background: var(--bg-2); font-size: .9rem; color: var(--ink-soft); }
+  .field.mono { font-size: .82rem; overflow-wrap: anywhere; }
+  .field.focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(45,212,191,.16); color: var(--ink); }
+  .result { border: 1px solid var(--border-glow); background: linear-gradient(180deg, rgba(45,212,191,.06), rgba(34,211,238,.03)); border-radius: 12px; padding: 15px; display: flex; flex-direction: column; gap: 9px; }
+  .result .link { color: var(--cyan); font-weight: 600; overflow-wrap: anywhere; }
+  .divider { height: 1px; background: var(--border); border: 0; margin: 4px 0; }
+
+  .btn { font-family: "Sora"; font-weight: 600; font-size: .9rem; cursor: pointer; border: 0; padding: 11px 20px; border-radius: var(--pill); display: inline-flex; align-items: center; gap: 8px; color: #04121a; transition: transform .14s, filter .2s; }
+  .btn:hover { transform: translateY(-1px); filter: brightness(1.06); }
+  .btn svg { width: 15px; height: 15px; }
+  .btn-teal { background: var(--grad-teal); box-shadow: 0 8px 24px -10px rgba(45,212,191,.6); }
+  .btn-green { background: var(--grad-green); color: #eafff6; }
+  .btn-outline { background: transparent; color: var(--ink); border: 1px solid var(--border); }
+  .btn-outline:hover { border-color: var(--teal); color: var(--teal); }
+  .btn-sm { padding: 8px 15px; font-size: .82rem; }
+
+  .tag { display: inline-flex; align-items: center; gap: 6px; font-family: "Sora"; font-weight: 600; font-size: .76rem; padding: 5px 12px; border-radius: var(--pill); border: 1.5px solid; }
+  .tag .pip { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .t-teal { color: var(--teal); border-color: rgba(45,212,191,.5); }
+  .t-cyan { color: var(--cyan); border-color: rgba(34,211,238,.5); }
+  .t-green { color: #34d399; border-color: rgba(52,211,153,.5); }
+  .t-blue { color: #60a5fa; border-color: rgba(96,165,250,.5); }
+  .t-purple { color: var(--purple); border-color: rgba(167,139,250,.5); }
+  .t-orange { color: var(--orange); border-color: rgba(251,146,60,.5); }
+  .t-dim { color: var(--muted); border-color: var(--border); }
+
+  .seg { display: inline-flex; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--pill); padding: 4px; gap: 4px; }
+  .seg button { border: 0; background: transparent; color: var(--muted); font-family: "Sora"; font-size: .82rem; font-weight: 600; padding: 9px 18px; border-radius: var(--pill); cursor: pointer; }
+  .seg button.on { background: var(--grad-teal); color: #04121a; }
+  .sw { position: relative; width: 42px; height: 24px; border-radius: var(--pill); background: var(--border); flex: none; }
+  .sw.on { background: var(--grad-teal); }
+  .sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .18s; }
+  .sw.on::after { transform: translateX(18px); }
+  .swrow { display: flex; align-items: center; gap: 11px; }
+  .swrow .txt { font-size: .88rem; font-weight: 600; }
+  .inline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .mini { border: 1px solid var(--border); background: var(--bg-2); border-radius: var(--pill); padding: 7px 14px; font-family: "Sora"; font-size: .8rem; font-weight: 600; color: var(--ink-soft); }
+  .num { width: 44px; text-align: center; }
+  .actions-end { display: flex; justify-content: flex-end; gap: 10px; }
+
+  .lc { border: 1px solid var(--border); border-radius: 13px; }
+  .lc + .lc { margin-top: 12px; }
+  .lc-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; cursor: pointer; }
+  .lc-head .meta { font-size: .78rem; color: var(--muted); margin-top: 2px; }
+  .lc-body { border-top: 1px solid var(--border); padding: 16px; display: flex; flex-direction: column; gap: 16px; background: var(--bg-2); border-radius: 0 0 13px 13px; }
+  .subh { font-size: .68rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--teal); margin-bottom: 10px; }
+
+  .audit { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  .audit td { padding: 13px 8px; border-bottom: 1px solid var(--border); }
+  .audit tr:last-child td { border-bottom: 0; }
+  .audit .time { color: var(--muted); font-size: .78rem; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+  .note { display: inline-flex; align-items: center; gap: 7px; border: 1px dashed var(--border); border-radius: var(--pill); padding: 5px 12px; font-size: .76rem; color: var(--muted); }
+  .quick { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px,1fr)); gap: 14px; }
+  .qcard { display: flex; align-items: center; gap: 12px; padding: 16px 18px; cursor: pointer; }
+  .qcard:hover { border-color: var(--teal); }
+  .qcard .qi { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; flex: none; }
+  .qcard .qt { font-family: "Sora"; font-weight: 700; font-size: .95rem; }
+  .qcard .qs { font-size: .78rem; color: var(--muted); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="side-brand">
+      <span class="mark"><svg viewBox="0 0 24 24" fill="none"><path d="M3 5h2l2.2 10.2a1.5 1.5 0 0 0 1.47 1.18h7.9a1.5 1.5 0 0 0 1.46-1.15L20.5 8H6.2" stroke="#04121a" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><circle cx="9.5" cy="20" r="1.4" fill="#04121a"/><circle cx="17" cy="20" r="1.4" fill="#04121a"/></svg></span>
+      <span class="name">DealVerse</span>
+    </div>
+    <nav class="nav" id="nav">
+      <a data-page="dashboard" data-title="Dashboard" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 11 12 4l8 7" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 10v9h12v-9" stroke-linecap="round" stroke-linejoin="round"/></svg>Dashboard</a>
+      <div class="cap">Affiliate</div>
+      <a data-page="generate" data-title="Generate a link"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2 4.5 12.5a1 1 0 0 0 .8 1.6H11l-1 7.9 8.5-10.5a1 1 0 0 0-.8-1.6H12l1-7.9Z" stroke-linejoin="round"/></svg>Generate</a>
+      <a data-page="affiliate" data-title="Affiliate settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3m10-10h-3M5 12H2m15.5-6.5-2 2m-9 9-2 2m13 0-2-2m-9-9-2-2" stroke-linecap="round"/></svg>Affiliate settings</a>
+      <div class="cap">Telegram</div>
+      <a data-page="telegram" data-title="Telegram bot &amp; channels"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m21 4-9 8-9-4 18-4Z" stroke-linejoin="round"/><path d="M12 12 9 21l-1-6" stroke-linecap="round" stroke-linejoin="round"/></svg>Bot &amp; channels</a>
+      <a data-page="listeners" data-title="Listener channels"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 9h10M7 13h6" stroke-linecap="round"/></svg>Listeners</a>
+      <a data-page="automation" data-title="Automation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>Automation</a>
+      <a data-page="broadcasts" data-title="Custom messages"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 10v4l7 4V6l-7 4Z" stroke-linejoin="round"/><path d="M14 9a4 4 0 0 1 0 6" stroke-linecap="round"/></svg>Custom messages</a>
+      <div class="cap">System</div>
+      <a data-page="audit" data-title="Audit log"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5" stroke-linecap="round"/></svg>Audit log</a>
+    </nav>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div style="display:flex;align-items:center;gap:14px">
+        <button class="ibtn menu-btn" id="menu" aria-label="Menu"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16" stroke-linecap="round"/></svg></button>
+        <div>
+          <div class="crumb">Admin <span style="opacity:.5">/</span> <b id="crumb">Dashboard</b></div>
+          <div class="ptitle" id="ptitle">Dashboard</div>
+        </div>
+      </div>
+      <div class="top-right">
+        <button class="ibtn" aria-label="Alerts"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6Z" stroke-linejoin="round"/><path d="M10 20a2 2 0 0 0 4 0" stroke-linecap="round"/></svg></button>
+        <div class="avatar">DV</div>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <!-- ===== DASHBOARD ===== -->
+      <section class="page" id="p-dashboard">
+        <div class="stats" style="margin-bottom:22px">
+          <div class="card stat"><div class="ic teal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M13 2 4.5 12.5a1 1 0 0 0 .8 1.6H11l-1 7.9 8.5-10.5a1 1 0 0 0-.8-1.6H12l1-7.9Z" stroke-linejoin="round"/></svg></div><div><div class="lbl">Links today</div><div class="val">128 <small>+18%</small></div></div></div>
+          <div class="card stat"><div class="ic green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="m21 4-9 8-9-4 18-4Z" stroke-linejoin="round"/></svg></div><div><div class="lbl">Deals posted · 24h</div><div class="val">41</div></div></div>
+          <div class="card stat"><div class="ic blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 8a8 8 0 0 1 8 8" stroke-linecap="round"/><path d="M14 4a14 14 0 0 1 6 16" stroke-linecap="round"/></svg></div><div><div class="lbl">Active channels</div><div class="val">2</div></div></div>
+          <div class="card stat"><div class="ic orange"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div><div class="lbl">Last cron</div><div class="val" style="font-size:1.2rem">12:30 <small style="color:var(--muted)">IST</small></div></div></div>
+        </div>
+
+        <h3 style="margin:6px 0 12px;font-size:1.05rem">Quick actions</h3>
+        <div class="quick" style="margin-bottom:24px">
+          <div class="card qcard" data-go="generate"><span class="qi ic teal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M13 2 4.5 12.5a1 1 0 0 0 .8 1.6H11l-1 7.9 8.5-10.5a1 1 0 0 0-.8-1.6H12l1-7.9Z" stroke-linejoin="round"/></svg></span><div><div class="qt">Generate a link</div><div class="qs">Paste &amp; convert</div></div></div>
+          <div class="card qcard" data-go="listeners"><span class="qi ic purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 9h10M7 13h6" stroke-linecap="round"/></svg></span><div><div class="qt">Listeners</div><div class="qs">2 running</div></div></div>
+          <div class="card qcard" data-go="broadcasts"><span class="qi ic green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 10v4l7 4V6l-7 4Z" stroke-linejoin="round"/></svg></span><div><div class="qt">Send message</div><div class="qs">Broadcast now</div></div></div>
+          <div class="card qcard" data-go="audit"><span class="qi ic blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8" stroke-linecap="round"/></svg></span><div><div class="qt">Audit log</div><div class="qs">Recent activity</div></div></div>
+        </div>
+
+        <div class="card" style="max-width:900px">
+          <div class="whead"><span class="t">Recent activity</span><button class="btn btn-outline btn-sm" data-go="audit">View all</button></div>
+          <div style="padding:6px 20px">
+            <table class="audit">
+              <tr><td style="width:70px"><span class="tag t-cyan">cron</span></td><td>Read @FLTlooters (2 latest) → posted 2 new deals.</td><td class="time">12:30</td></tr>
+              <tr><td><span class="tag t-green">bot</span></td><td>@rahul_k generated affiliate link (B0F15TM77B).</td><td class="time">12:24</td></tr>
+              <tr><td><span class="tag t-orange">cast</span></td><td>Scheduled message sent to 2 channels (pinned).</td><td class="time">12:00</td></tr>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== GENERATE ===== -->
+      <section class="page" id="p-generate" hidden>
+        <div class="page-inner">
+          <p class="page-lead">Paste any Amazon product link — full, short (amzn.to / a.co / link.amazon), or a search page — and get a clean, correctly-attributed affiliate link back.</p>
+          <div class="card" style="max-width:640px">
+            <div class="wbody">
+              <div class="field-group"><span class="label">Product link</span><div class="field mono focus">https://amzn.to/4gpRdU9</div></div>
+              <button class="btn btn-teal" style="justify-content:center">Generate Affiliate Link</button>
+              <div class="result">
+                <div style="font-weight:700">Nivea Body Wash, 500 ml</div><div class="help">Price: ₹239</div>
+                <div class="inline" style="justify-content:space-between;margin-top:2px"><span class="link mono" style="font-size:.82rem">https://link.amazon/B0dBNizZZ</span><button class="btn btn-outline btn-sm">Copy</button></div>
+                <div class="inline"><span class="tag t-green"><span class="pip"></span>SiteStripe</span><span class="tag t-dim">ASIN B0CHN2YDPG</span><button class="btn btn-outline btn-sm">Verify</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== AFFILIATE SETTINGS ===== -->
+      <section class="page" id="p-affiliate" hidden>
+        <div class="page-inner">
+          <p class="page-lead">Choose how links are attributed. TAG rewrites the URL with your associate tag; SITE_STRIPE mints genuine Amazon short links and falls back to TAG if the session fails.</p>
+          <div class="card" style="max-width:640px">
+            <div class="whead"><span class="t">Affiliate mode</span><span class="tag t-green"><span class="pip"></span>configured</span></div>
+            <div class="wbody">
+              <div class="field-group"><span class="label">Mode</span><div class="seg"><button>TAG</button><button class="on">SITE_STRIPE</button></div></div>
+              <div class="field-group"><span class="label">Associate tag</span><div class="field mono">dealverse08-21</div><span class="help">Used for TAG mode and as the SITE_STRIPE fallback.</span></div>
+              <div class="actions-end"><button class="btn btn-teal btn-sm">Save settings</button></div>
+            </div>
+          </div>
+          <div class="card" style="max-width:640px;margin-top:18px">
+            <div class="whead"><span class="t">SiteStripe session</span></div>
+            <div class="wbody">
+              <div class="field" style="display:flex;justify-content:space-between;align-items:center">17 cookies · amazon.in<span class="tag t-green"><span class="pip"></span>active</span></div>
+              <div class="field-group"><span class="label">Paste SiteStripe cURL</span><div class="field mono" style="min-height:64px;color:var(--muted)">curl 'https://www.amazon.in/associates/sitestripe/getShortUrl?…' -H '…' -b '…'</div></div>
+              <div class="actions-end"><button class="btn btn-teal btn-sm">Save session</button></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== TELEGRAM ===== -->
+      <section class="page" id="p-telegram" hidden>
+        <div class="page-inner">
+          <p class="page-lead">Your bot serves link generation in chat and publishes deals to channels. Each channel has a master Active switch and an opt-in for auto-posting user links.</p>
+          <div class="card" style="max-width:680px">
+            <div class="whead"><span class="t"><span class="d"></span>@DealVerse_Auto_bot</span><span class="tag t-green"><span class="pip"></span>active</span></div>
+            <div class="wbody" style="gap:11px">
+              <div class="inline" style="justify-content:space-between"><span class="help">Webhook registered · 2 channels</span><button class="btn btn-outline btn-sm">+ Add channel</button></div>
+              <div class="lc"><div class="lc-head"><div><div style="font-weight:700">Loot Deals Official</div><div class="meta">auto-post user links: on</div></div><span class="sw on"></span></div></div>
+              <div class="lc"><div class="lc-head"><div><div style="font-weight:700">Fashion Steals</div><div class="meta">auto-post user links: off</div></div><span class="sw on"></span></div></div>
+              <div class="lc"><div class="lc-head"><div><div style="font-weight:700">Archive <span class="tag t-dim" style="padding:2px 8px">inactive</span></div><div class="meta">receives nothing</div></div><span class="sw"></span></div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== LISTENERS ===== -->
+      <section class="page" id="p-listeners" hidden>
+        <div class="page-inner">
+          <p class="page-lead">Read public deal channels (no login), re-tag their Amazon links as yours, and post them to your channels — manually or on each listener's own schedule.</p>
+          <div class="inline" style="justify-content:flex-end;max-width:680px;margin-bottom:14px"><button class="btn btn-outline btn-sm">+ Add listener</button></div>
+          <div style="max-width:680px">
+            <div class="lc">
+              <div class="lc-head"><div><div style="font-weight:700">FLT Loofters <span class="tag t-dim" style="padding:2px 8px">@FLTlooters</span></div><div class="meta">auto · every 30 min · 2 msgs</div></div>
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--muted)" stroke-width="2"><path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+              <div class="lc-body">
+                <div><div class="subh">Manual fetch</div><div class="inline"><span class="mini">Last 10</span><span class="mini">Last 20</span><span class="mini num">5</span><span class="mini">Fetch</span></div></div>
+                <div><div class="subh">Automation</div>
+                  <div class="swrow" style="margin-bottom:12px"><span class="sw on"></span><span class="txt">Auto-post new deals from this channel</span></div>
+                  <div class="inline"><span class="help">every</span><span class="mini num">30</span><span class="help">min · latest</span><span class="mini num">2</span><span class="help">msgs</span><span class="btn btn-teal btn-sm">Save</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="lc"><div class="lc-head"><div><div style="font-weight:700">EK Official <span class="tag t-dim" style="padding:2px 8px">@ekofficial</span></div><div class="meta">auto · every 60 min · 5 msgs</div></div>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--muted)" stroke-width="2"><path d="M6 15l6-6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== AUTOMATION ===== -->
+      <section class="page" id="p-automation" hidden>
+        <div class="page-inner">
+          <p class="page-lead">A background checker wakes every ~5 minutes and runs only the listeners whose interval is due. Runs never overlap, and each deal is posted only once.</p>
+          <div class="card" style="max-width:640px">
+            <div class="whead"><span class="t"><span class="d"></span>Automation status</span><span class="tag t-teal">checker live</span></div>
+            <div class="wbody">
+              <div class="field" style="display:flex;justify-content:space-between"><span class="help">Next due</span><span>@FLTlooters in ~12 min</span></div>
+              <div class="field" style="display:flex;justify-content:space-between"><span class="help">Last run</span><span>12:30 · posted 5 deals</span></div>
+              <div class="actions-end"><button class="btn btn-teal btn-sm">Run all now</button></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== BROADCASTS ===== -->
+      <section class="page" id="p-broadcasts" hidden>
+        <div class="page-inner">
+          <p class="page-lead">Send a custom message to your active channels now, or schedule it — daily times, chosen weekdays, or a one-off date. Optionally pin it. Times are IST.</p>
+          <div class="card" style="max-width:640px">
+            <div class="wbody">
+              <div class="field-group"><span class="label">Message</span><div class="field" style="min-height:60px;color:var(--ink)">🔥 Big Billion Deals — loot coming soon! Stay active 👀</div></div>
+              <div class="swrow"><span class="sw on"></span><span class="txt">Pin this message in the channel</span></div>
+              <hr class="divider" />
+              <div class="field-group"><span class="label">Schedule</span><div class="seg"><button class="on">Recurring</button><button>Once</button></div></div>
+              <div class="field-group"><span class="label">Times (IST) · days</span><div class="inline"><span class="mini">12:00</span><span class="mini">18:00</span><span class="tag t-dim">Mon</span><span class="tag t-dim">Wed</span><span class="tag t-dim">Fri</span></div></div>
+              <div class="inline" style="justify-content:space-between"><button class="btn btn-outline btn-sm">Schedule</button><button class="btn btn-green btn-sm">Send now</button></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== AUDIT ===== -->
+      <section class="page" id="p-audit" hidden>
+        <div class="page-inner">
+          <p class="page-lead">Every cron run, bot link, website link and broadcast is recorded — kept for two days, then auto-expired.</p>
+          <div class="card">
+            <div class="whead"><span class="t">Recent activity</span><button class="btn btn-outline btn-sm">Refresh</button></div>
+            <div style="padding:6px 20px">
+              <table class="audit">
+                <tr><td style="width:70px"><span class="tag t-cyan">cron</span></td><td>Read @FLTlooters (2 latest) → posted 2 new deals.</td><td class="time">12:30</td></tr>
+                <tr><td><span class="tag t-green">bot</span></td><td>@rahul_k generated affiliate link (B0F15TM77B).</td><td class="time">12:24</td></tr>
+                <tr><td><span class="tag t-orange">cast</span></td><td>Scheduled message sent to 2 channels (pinned).</td><td class="time">12:00</td></tr>
+                <tr><td><span class="tag t-purple">web</span></td><td>Website generated affiliate link (B0CHN2YDPG).</td><td class="time">11:57</td></tr>
+                <tr><td><span class="tag t-cyan">cron</span></td><td>Read @ekofficial (5 latest) → posted 3 new deals.</td><td class="time">11:30</td></tr>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div style="margin-top:28px;display:flex;justify-content:center"><span class="note"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v4m0 4h.01" stroke-linecap="round"/></svg>Design demo — static mockup, not the live app</span></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  var nav = document.getElementById('nav');
+  var sb = document.getElementById('sidebar');
+  var links = nav.querySelectorAll('a[data-page]');
+  var pages = document.querySelectorAll('.page');
+  var ptitle = document.getElementById('ptitle');
+  var crumb = document.getElementById('crumb');
+
+  function show(page, title) {
+    pages.forEach(function (p) { p.hidden = p.id !== 'p-' + page; });
+    links.forEach(function (a) { a.classList.toggle('on', a.dataset.page === page); });
+    ptitle.innerHTML = title;
+    crumb.innerHTML = title;
+    sb.classList.remove('open');
+    window.scrollTo(0, 0);
+  }
+  links.forEach(function (a) {
+    a.addEventListener('click', function () { show(a.dataset.page, a.dataset.title); });
+  });
+  document.querySelectorAll('[data-go]').forEach(function (el) {
+    el.addEventListener('click', function () {
+      var link = nav.querySelector('a[data-page="' + el.dataset.go + '"]');
+      if (link) show(link.dataset.page, link.dataset.title);
+    });
+  });
+  var mb = document.getElementById('menu');
+  if (mb) mb.addEventListener('click', function () { sb.classList.toggle('open'); });
+</script>

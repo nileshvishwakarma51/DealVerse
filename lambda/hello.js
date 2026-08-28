@@ -9,6 +9,7 @@ const { parseCurl, validateParsedCurl } = require('./lib/curl');
 const { verifyAffiliate } = require('./lib/amazon');
 const {
   generateAmazonLink,
+  testSiteStripe,
   SITESTRIPE_KEY,
   AMAZON_KEY,
   DEFAULT_AMAZON,
@@ -43,11 +44,16 @@ const {
   fetchMessages,
   fetchEnriched,
   getListeners,
+  probePublic,
   addListener,
   removeListener,
   setListenerAutomation,
 } = require('./lib/listener');
 const { getAutomation, maskAutomation, runAutomation } = require('./lib/automation');
+// MTProto (beta). This module is dependency-free at load time — GramJS is
+// lazy-required INSIDE its functions — so requiring it here can never affect
+// existing routes or the automation tick, even if GramJS is not installed.
+const mtproto = require('./lib/mtproto');
 
 // ── Static React build (copied into lambda/public at build time) ────────────
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -136,6 +142,9 @@ function maskSiteStripe(cfg) {
     hasCookies: cookieCount > 0,
     cookieCount,
     configuredAt: cfg.configuredAt || null,
+    status: cfg.status || 'ok',
+    expiredAt: cfg.expiredAt || null,
+    testedAt: cfg.testedAt || null,
   };
 }
 
@@ -231,6 +240,14 @@ exports.handler = async (event) => {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
       const cfg = await getConfig(SITESTRIPE_KEY);
       return respond(200, { success: true, sitestripe: maskSiteStripe(cfg) });
+    }
+
+    // ── Admin: test the SiteStripe session live (protected) ───────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/amazon/sitestripe/test')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const result = await testSiteStripe();
+      const cfg = await getConfig(SITESTRIPE_KEY);
+      return respond(200, { success: true, result, sitestripe: maskSiteStripe(cfg) });
     }
 
     // ── Admin: save SiteStripe curl (protected) ───────────────────────────
@@ -370,21 +387,39 @@ exports.handler = async (event) => {
       return respond(200, { success: true, listeners: await getListeners() });
     }
 
-    // ── Admin: test-read a public channel (last 5) (protected) ────────────
+    // ── Admin: test-read a channel; auto-pick public preview vs MTProto ────
     if (method === 'POST' && reqPath.endsWith('/api/admin/listener/test')) {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
       const { channel } = parseBody(event);
       const username = parseUsername(channel);
-      const messages = await fetchMessages(username, 5);
-      return respond(200, { success: true, username, messages });
+      if (await probePublic(username)) {
+        const messages = await fetchMessages(username, 5);
+        return respond(200, { success: true, username, source: 'public', messages });
+      }
+      // No public preview → it's a group / private / preview-disabled channel.
+      const st = await mtproto.status();
+      if (!st.loggedIn) {
+        return respond(400, {
+          success: false,
+          error:
+            'No public preview for this handle (it looks like a group or private channel). Set up "Logged-in Telegram access" above — log in with a Telegram account that is a member — then try again.',
+        });
+      }
+      const enriched = await mtproto.fetchEnriched(username, 5);
+      return respond(200, {
+        success: true,
+        username,
+        source: 'mtproto',
+        messages: enriched.map((m) => ({ id: m.id, text: m.text })),
+      });
     }
 
     // ── Admin: add a listener channel (protected) ─────────────────────────
     if (method === 'POST' && reqPath.endsWith('/api/admin/listener/add')) {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
-      const { channel, title } = parseBody(event);
+      const { channel, title, source } = parseBody(event);
       const username = parseUsername(channel);
-      const listeners = await addListener(username, title);
+      const listeners = await addListener(username, title, source);
       return respond(200, { success: true, listeners });
     }
 
@@ -423,7 +458,12 @@ exports.handler = async (event) => {
       const { channel, limit } = parseBody(event);
       const username = parseUsername(channel);
       const n = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 30);
-      const messages = await fetchEnriched(username, n);
+      const listeners = await getListeners();
+      const found = listeners.find((l) => l.username.toLowerCase() === username.toLowerCase());
+      const messages =
+        found && found.source === 'mtproto'
+          ? await mtproto.fetchEnriched(username, n)
+          : await fetchEnriched(username, n);
       return respond(200, { success: true, username, messages });
     }
 
@@ -439,6 +479,89 @@ exports.handler = async (event) => {
         return respond(400, { success: false, error: 'No channel configured. Add a bot channel first.' });
       }
       return respond(200, { success: true, sent });
+    }
+
+    // ── MTProto (BETA): read private groups / preview-disabled channels ───
+    // Every route below is Bearer-guarded and delegates to lib/mtproto.js,
+    // which lazy-requires GramJS. Errors here NEVER affect other routes.
+
+    // Masked status (never returns api_hash / session).
+    if (method === 'GET' && reqPath.endsWith('/api/admin/mtproto')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      return respond(200, { success: true, mtproto: await mtproto.status() });
+    }
+
+    // Save api_id + api_hash.
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/api')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { apiId, apiHash } = parseBody(event);
+      const st = await mtproto.saveApi(apiId, apiHash);
+      return respond(200, { success: true, mtproto: st });
+    }
+
+    // Login step 1 — send the login code to the account.
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/send-code')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { phone } = parseBody(event);
+      const st = await mtproto.sendCode(phone);
+      return respond(200, { success: true, mtproto: st });
+    }
+
+    // Login step 2 — submit the code (+ optional 2FA password).
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/sign-in')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { code, password } = parseBody(event);
+      const st = await mtproto.signIn(code, password);
+      return respond(200, { success: true, mtproto: st });
+    }
+
+    // Log the user account out (revokes the session).
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/logout')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const st = await mtproto.logout();
+      return respond(200, { success: true, mtproto: st });
+    }
+
+    // Clear ALL MTProto credentials + session (start fresh with a new account).
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/clear')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const st = await mtproto.clearCredentials();
+      return respond(200, { success: true, mtproto: st });
+    }
+
+    // Read-only: list the account's groups/channels (for picking a source).
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/dialogs')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { limit } = parseBody(event);
+      const dialogs = await mtproto.listDialogs(limit);
+      return respond(200, { success: true, dialogs });
+    }
+
+    // Manage MTProto listener sources (admin bookkeeping only).
+    if (method === 'GET' && reqPath.endsWith('/api/admin/mtproto/sources')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      return respond(200, { success: true, sources: await mtproto.getSources() });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/sources/add')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { peer, title } = parseBody(event);
+      const sources = await mtproto.addSource(peer, title);
+      return respond(200, { success: true, sources });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/sources/remove')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { peer } = parseBody(event);
+      const sources = await mtproto.removeSource(peer);
+      return respond(200, { success: true, sources });
+    }
+
+    // Read-only: last N messages from a source + fresh affiliate links.
+    // Publishing re-uses the EXISTING /api/admin/listener/publish route.
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/messages')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { peer, limit } = parseBody(event);
+      const messages = await mtproto.fetchEnriched(peer, limit);
+      return respond(200, { success: true, peer: String(peer), messages });
     }
 
     // ── Telegram webhook (public; verified by secret header) ──────────────
