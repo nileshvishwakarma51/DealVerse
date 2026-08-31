@@ -167,9 +167,13 @@ label { display: block; font-size: .82rem; font-weight: 600; color: var(--ink-so
 .modal-head h2 { margin: 0; }
 
 /* audit list */
-.audit-row { display: flex; align-items: baseline; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--border); font-size: .85rem; flex-wrap: wrap; }
+.audit-row { padding: 11px 0; border-bottom: 1px solid var(--border); font-size: .85rem; }
+.audit-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.audit-row.has-detail .audit-head { cursor: pointer; }
+.audit-chev { color: var(--teal); font-size: .8rem; width: 12px; flex: 0 0 auto; }
 .audit-msg { flex: 1; min-width: 170px; color: var(--ink-soft); }
 .audit-time { white-space: nowrap; }
+.audit-detail { margin: 10px 0 2px; padding: 12px 14px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; color: var(--ink-soft); font-family: "JetBrains Mono", ui-monospace, monospace; font-size: .76rem; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow-y: auto; }
 
 /* listener messages modal */
 .msgcard { border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 12px; }

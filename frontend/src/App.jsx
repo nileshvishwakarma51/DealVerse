@@ -648,6 +648,7 @@ function BroadcastConfig({ authFetch }) {
 function AuditConfig({ authFetch }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [openIdx, setOpenIdx] = useState(null);
 
   async function load() {
     setLoading(true);
@@ -661,18 +662,26 @@ function AuditConfig({ authFetch }) {
 
   return (
     <>
-      <p className="subtitle">Recent activity (kept 2 days). Cron runs, bot/website links, and custom messages.</p>
+      <p className="subtitle">Recent activity (kept 2 days). Rows with a ▸ can be expanded to see the full flow — which links were found, how each converted, and whether it posted (and why not).</p>
       <div className="row" style={{ marginTop: 0 }}>
         <button className="secondary" onClick={load} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
       </div>
       {!loading && items.length === 0 && <p className="meta">No activity yet.</p>}
-      {items.map((a, i) => (
-        <div key={i} className="audit-row">
-          <span className={`badge audit-${a.type}`}>{a.type}</span>
-          <span className="audit-msg">{a.message}</span>
-          <span className="meta audit-time">{a.at ? new Date(a.at).toLocaleString() : ''}</span>
-        </div>
-      ))}
+      {items.map((a, i) => {
+        const hasDetail = !!a.detail;
+        const open = openIdx === i;
+        return (
+          <div key={i} className={`audit-row${hasDetail ? ' has-detail' : ''}`}>
+            <div className="audit-head" onClick={() => hasDetail && setOpenIdx(open ? null : i)}>
+              {hasDetail && <span className="audit-chev">{open ? '▾' : '▸'}</span>}
+              <span className={`badge audit-${a.type}`}>{a.type}</span>
+              <span className="audit-msg">{a.message}</span>
+              <span className="meta audit-time">{a.at ? new Date(a.at).toLocaleString() : ''}</span>
+            </div>
+            {open && hasDetail && <pre className="audit-detail">{a.detail}</pre>}
+          </div>
+        );
+      })}
     </>
   );
 }

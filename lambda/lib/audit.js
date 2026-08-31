@@ -20,22 +20,22 @@ function tenantPrefix(tid) {
   return `${PREFIX}${tid}#`;
 }
 
-async function logAudit(type, message) {
+// `detail` (optional) is a longer, multi-line explanation the UI shows when a
+// row is expanded (e.g. the per-message listener → convert → publish flow).
+async function logAudit(type, message, detail) {
   try {
     const now = Date.now();
     const id = `${tenantPrefix(getTenant())}${now}#${crypto.randomBytes(4).toString('hex')}`;
-    await ddb.send(
-      new PutItemCommand({
-        TableName: TABLE_NAME,
-        Item: {
-          id: { S: id },
-          type: { S: String(type || 'info') },
-          message: { S: String(message || '').slice(0, 500) },
-          at: { S: new Date(now).toISOString() },
-          ttl: { N: String(Math.floor(now / 1000) + TTL_SECONDS) },
-        },
-      })
-    );
+    const item = {
+      id: { S: id },
+      type: { S: String(type || 'info') },
+      message: { S: String(message || '').slice(0, 500) },
+      at: { S: new Date(now).toISOString() },
+      ttl: { N: String(Math.floor(now / 1000) + TTL_SECONDS) },
+    };
+    const d = detail == null ? '' : String(detail).slice(0, 3500);
+    if (d) item.detail = { S: d };
+    await ddb.send(new PutItemCommand({ TableName: TABLE_NAME, Item: item }));
   } catch {
     /* never let audit logging break the main flow */
   }
@@ -54,6 +54,7 @@ async function listAudit(limit = 60) {
       type: it.type ? it.type.S : 'info',
       message: it.message ? it.message.S : '',
       at: it.at ? it.at.S : null,
+      detail: it.detail ? it.detail.S : null,
     }));
     items.sort((a, b) => (a.at < b.at ? 1 : -1)); // newest first
     return items.slice(0, limit);

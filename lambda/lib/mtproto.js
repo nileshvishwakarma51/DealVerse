@@ -19,7 +19,7 @@
 const { ApiError } = require('./errors');
 const { getConfig, setConfig, getTenant } = require('./store');
 const { generateLink, getActivePlatforms } = require('./affiliate');
-const { activeLinks } = require('./links');
+const { activeLinks, dealLinks } = require('./links');
 const { logAudit } = require('./audit');
 
 const MTPROTO_KEY = 'mtproto';
@@ -454,12 +454,13 @@ async function fetchRaw(peerRaw, limitRaw) {
     const messages = await client.getMessages(entity, { limit }).catch((err) => {
       throw mapRpcError(err, 'Could not read messages from that source.');
     });
-    const active = await getActivePlatforms();
+    // Return ALL deal links (both platforms, unfiltered) so the automation trace
+    // can explain per-link decisions (e.g. "Flipkart is off" vs conversion error).
     return messages.map((m) => ({
       id: m && m.id !== undefined ? String(m.id) : '0',
       numId: m && Number.isFinite(Number(m.id)) ? Number(m.id) : 0,
       text: (m && m.message) || '',
-      links: activeLinks(extractLinks(m), active),
+      links: dealLinks(extractLinks(m)).map((d) => d.url),
     }));
   } finally {
     await safeDisconnect(client);
@@ -527,10 +528,14 @@ async function readPool() {
 }
 
 function poolCounts(pool) {
-  const c = { total: 0, pending: 0, added: 0, privacy: 0, failed: 0 };
+  // `added` is cumulative (added members are removed from the pool), so it comes
+  // from a running tally; the rest are counted from the members still in the pool.
+  const c = { total: 0, pending: 0, added: (pool && pool.addedTotal) || 0, privacy: 0, failed: 0 };
   for (const u of (pool && pool.users) || []) {
     c.total++;
-    if (c[u.status] !== undefined) c[u.status] += 1;
+    if (u.status === 'pending') c.pending++;
+    else if (u.status === 'privacy') c.privacy++;
+    else if (u.status === 'failed') c.failed++;
   }
   return c;
 }
@@ -558,12 +563,27 @@ function maskPool(pool) {
   };
 }
 
+// One-time self-heal: members added under the OLD code kept status 'added' in
+// the pool. Fold any such legacy rows into the running tally and drop them, so
+// added members never linger in Step 2.
+async function normalizePool() {
+  const pool = await readPool();
+  const users = pool.users || [];
+  const legacy = users.filter((u) => u.status === 'added');
+  if (legacy.length) {
+    pool.users = users.filter((u) => u.status !== 'added');
+    pool.addedTotal = (pool.addedTotal || 0) + legacy.length;
+    await setConfig(IMPORT_POOL_KEY, pool);
+  }
+  return pool;
+}
+
 async function importStatus() {
-  return maskPool(await readPool());
+  return maskPool(await normalizePool());
 }
 
 async function importClear() {
-  await setConfig(IMPORT_POOL_KEY, { users: [], source: null, target: null, fetchedAt: null });
+  await setConfig(IMPORT_POOL_KEY, { users: [], source: null, target: null, fetchedAt: null, addedTotal: 0 });
   await logAudit('mtproto', 'Cleared the import pool.');
   return maskPool(await readPool());
 }
@@ -780,6 +800,13 @@ async function importAddOne(targetRaw, userIdRaw) {
       }
     }
 
+    // Once a member is in the channel (freshly added OR already a participant),
+    // drop them from the pool so they never show again in Step 2. Keep a running
+    // tally so the stats bar can still report how many were added.
+    if (outcome.status === 'added') {
+      pool.users = (pool.users || []).filter((x) => String(x.id) !== userId);
+      pool.addedTotal = (pool.addedTotal || 0) + 1;
+    }
     pool.target = String(targetRaw).trim();
     await setConfig(IMPORT_POOL_KEY, pool);
     await logAudit('mtproto', `Import add-one → ${pool.target}: ${u.username || u.id} = ${outcome.status}.`);
