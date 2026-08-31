@@ -7,9 +7,11 @@ const { ApiError } = require('./errors');
 const { getConfig, setConfig } = require('./store');
 const { buildCleanProductUrl, requestShortUrl, buildTagUrl, appendTag } = require('./amazon');
 const { fetchProductMeta } = require('./productMeta');
+const { classify } = require('./links');
 
 const SITESTRIPE_KEY = 'sitestripe';
 const AMAZON_KEY = 'amazon';
+const FLIPKART_KEY = 'flipkart';
 const DEFAULT_AMAZON = { mode: 'TAG', tag: '' };
 const TEST_PRODUCT_URL = 'https://www.amazon.in/dp/B0CHN2YDPG';
 
@@ -71,13 +73,44 @@ async function buildLink(rawUrl) {
   return { success: true, platform: 'amazon', method: 'tag', fallback: false, affiliateUrl: tagUrl(amazon.tag), resolvedUrl: cleanUrl, asin };
 }
 
-// Public: build the link and best-effort attach product title + price.
-async function generateAmazonLink(rawUrl, { withMeta = true } = {}) {
-  const result = await buildLink(rawUrl);
-  if (withMeta) {
-    result.product = await fetchProductMeta(result.resolvedUrl);
+// Which platforms are currently enabled. Amazon defaults ON (so the existing
+// single-tenant merchant — whose config has no `active` field — is unchanged);
+// Flipkart defaults OFF until a merchant configures + enables it.
+async function getActivePlatforms() {
+  const amazon = (await getConfig(AMAZON_KEY)) || {};
+  const flipkart = (await getConfig(FLIPKART_KEY)) || {};
+  return {
+    amazon: amazon.active !== false,
+    flipkart: flipkart.active === true,
+  };
+}
+
+// Public unified entry: classify the URL and convert with the right engine.
+// Amazon → SiteStripe/tag (in-Lambda). Flipkart → conversion bot via MTProto.
+async function generateLink(rawUrl, { withMeta = true } = {}) {
+  const platform = classify(rawUrl);
+  const active = await getActivePlatforms();
+
+  if (platform === 'flipkart') {
+    if (!active.flipkart) throw new ApiError(400, 'Flipkart link support is turned off.');
+    // eslint-disable-next-line global-require
+    const flipkart = require('./flipkart');
+    return flipkart.convert(rawUrl); // bot conversion has no product meta
   }
-  return result;
+
+  if (platform === 'amazon') {
+    if (!active.amazon) throw new ApiError(400, 'Amazon link support is turned off.');
+    const result = await buildLink(rawUrl);
+    if (withMeta) result.product = await fetchProductMeta(result.resolvedUrl);
+    return result;
+  }
+
+  throw new ApiError(400, 'Unsupported link. Paste an Amazon or Flipkart product link.');
+}
+
+// Backward-compatible alias (now platform-aware, not Amazon-only).
+async function generateAmazonLink(rawUrl, opts) {
+  return generateLink(rawUrl, opts);
 }
 
 // On-demand: run one live SiteStripe call and record whether it works.
@@ -105,4 +138,13 @@ async function testSiteStripe() {
   }
 }
 
-module.exports = { generateAmazonLink, testSiteStripe, SITESTRIPE_KEY, AMAZON_KEY, DEFAULT_AMAZON };
+module.exports = {
+  generateLink,
+  generateAmazonLink,
+  getActivePlatforms,
+  testSiteStripe,
+  SITESTRIPE_KEY,
+  AMAZON_KEY,
+  FLIPKART_KEY,
+  DEFAULT_AMAZON,
+};

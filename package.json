@@ -12,8 +12,8 @@
     "fe:install": "npm --prefix frontend install",
     "fe:build": "npm --prefix frontend run build && node scripts/copy-fe.js",
     "lambda:install": "node scripts/package-lambda.js",
-    "deploy": "npm run fe:build && npm run lambda:install && cdk deploy",
-    "deploy:infra": "npm run lambda:install && cdk deploy",
+    "deploy": "npm run fe:build && npm run lambda:install && cdk deploy --require-approval never",
+    "deploy:infra": "npm run lambda:install && cdk deploy --require-approval never",
     "destroy": "cdk destroy"
   },
   "devDependencies": {

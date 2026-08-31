@@ -5,13 +5,13 @@
 // links for any Amazon URLs found.
 const { ApiError } = require('./errors');
 const { getConfig, setConfig } = require('./store');
-const { generateAmazonLink } = require('./affiliate');
+const { generateLink, getActivePlatforms } = require('./affiliate');
+const { activeLinks } = require('./links');
 
 const LISTENERS_KEY = 'listeners';
 const TIMEOUT_MS = 10000;
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-const AMAZONISH = /(?:amazon\.[a-z.]+|amzn\.[a-z]+|link\.amazon|amznn\.cc|a\.co)\//i;
 
 function decodeEntities(s) {
   return String(s || '')
@@ -67,27 +67,17 @@ async function fetchMessagesPage(username, before) {
   return messages;
 }
 
-function allAmazonLinks(links) {
-  const out = [];
-  const seen = new Set();
-  for (const l of links || []) {
-    if (AMAZONISH.test(l) && !seen.has(l)) {
-      seen.add(l);
-      out.push(l);
-    }
-  }
-  return out;
-}
-
 // Plain read for the "test read" preview — last N messages of any kind.
 async function fetchMessages(username, limit = 5) {
   const messages = await fetchMessagesPage(username);
   return messages.slice(-limit).reverse();
 }
 
-// Collect the newest `count` messages that contain an Amazon link, paging
-// backwards through the preview until we have enough (or run out / hit the cap).
+// Collect the newest `count` messages that contain a link for an ACTIVE platform
+// (Amazon and/or Flipkart), paging backwards through the preview until we have
+// enough (or run out / hit the cap).
 async function fetchAmazonMessages(username, count) {
+  const active = await getActivePlatforms();
   const MAX_PAGES = 10;
   const seen = new Set();
   const collected = [];
@@ -96,7 +86,7 @@ async function fetchAmazonMessages(username, count) {
     const msgs = await fetchMessagesPage(username, before);
     if (!msgs.length) break;
     for (const m of msgs) {
-      if (!seen.has(m.id) && allAmazonLinks(m.links).length) {
+      if (!seen.has(m.id) && activeLinks(m.links, active).length) {
         seen.add(m.id);
         collected.push(m);
       }
@@ -126,17 +116,18 @@ async function mapLimit(items, limit, fn) {
 // Fetch the newest `count` Amazon-link messages and build a fresh affiliate link
 // for EVERY Amazon link in each message (a message may contain several).
 async function fetchEnriched(username, count) {
+  const active = await getActivePlatforms();
   const messages = await fetchAmazonMessages(username, count);
 
   // Flatten every (message, link) pair so concurrency is bounded across all.
   const tasks = [];
   for (const m of messages) {
-    for (const url of allAmazonLinks(m.links)) tasks.push({ id: m.id, url });
+    for (const url of activeLinks(m.links, active)) tasks.push({ id: m.id, url });
   }
   const done = await mapLimit(tasks, 5, async (t) => {
     let affiliate;
     try {
-      const r = await generateAmazonLink(t.url, { withMeta: false });
+      const r = await generateLink(t.url, { withMeta: false });
       affiliate = { affiliateUrl: r.affiliateUrl, method: r.method, fallback: r.fallback, asin: r.asin };
     } catch (err) {
       affiliate = { error: err.message };
@@ -234,7 +225,6 @@ module.exports = {
   fetchMessagesPage,
   fetchAmazonMessages,
   fetchEnriched,
-  allAmazonLinks,
   getListeners,
   saveListeners,
   probePublic,

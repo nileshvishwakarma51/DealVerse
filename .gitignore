@@ -28,3 +28,8 @@ Capture*.png
 
 # Built APKs
 *.apk
+
+# Dropped screenshots / reference images (not brand assets like dealverse.png)
+Capture*.jpg
+*.jfif
+WhatsApp Image*

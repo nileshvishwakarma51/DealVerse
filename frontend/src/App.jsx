@@ -3,10 +3,14 @@ import React, { useEffect, useRef, useState } from 'react';
 // API paths resolve relative to the current document (served under /<stage>/).
 const api = (p) => new URL(p, document.baseURI).toString();
 const TOKEN_KEY = 'dv_admin_token';
+const SUPER_TOKEN_KEY = 'dv_super_token';
 const stageBase = new URL('.', document.baseURI).pathname; // e.g. /prod/
 
 function isAdminPath() {
   return window.location.pathname.replace(/\/+$/, '').endsWith('/admin');
+}
+function isSuperPath() {
+  return window.location.pathname.replace(/\/+$/, '').endsWith('/super-admin');
 }
 function navTo(view) {
   const p = view === 'admin' ? stageBase + 'admin' : stageBase + 'home';
@@ -24,18 +28,28 @@ const IC = {
   mega: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M4 10v4l7 4V6l-7 4Z" strokeLinejoin="round"/><path d="M14 9a4 4 0 0 1 0 6" strokeLinecap="round"/></svg>,
   list: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5" strokeLinecap="round"/></svg>,
   menu: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 6h16M4 12h16M4 18h16" strokeLinecap="round"/></svg>,
+  key: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="8" cy="8" r="4"/><path d="m11 11 8 8m-3-3 2-2m-4 0 2-2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+  users: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0M16 6a3 3 0 0 1 0 6m2 8a6 6 0 0 0-3-5.2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+};
+
+// Admin login persists across browser/app restarts (localStorage), so the
+// Flutter app (and the browser) stays logged in until the user taps "Log out".
+const adminToken = {
+  get: () => localStorage.getItem(TOKEN_KEY) || '',
+  set: (t) => localStorage.setItem(TOKEN_KEY, t),
+  clear: () => localStorage.removeItem(TOKEN_KEY),
 };
 
 export default function App() {
-  const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) || '');
+  const [token, setToken] = useState(() => adminToken.get());
   const [view, setView] = useState(() => {
-    if (isAdminPath()) return sessionStorage.getItem(TOKEN_KEY) ? 'admin' : 'login';
+    if (isAdminPath()) return adminToken.get() ? 'admin' : 'login';
     return 'user';
   });
 
   useEffect(() => {
     const onPop = () => {
-      if (isAdminPath()) setView(sessionStorage.getItem(TOKEN_KEY) ? 'admin' : 'login');
+      if (isAdminPath()) setView(adminToken.get() ? 'admin' : 'login');
       else setView('user');
     };
     window.addEventListener('popstate', onPop);
@@ -51,15 +65,19 @@ export default function App() {
     setView('user');
   }
   function onLoggedIn(t) {
-    sessionStorage.setItem(TOKEN_KEY, t);
+    adminToken.set(t);
     setToken(t);
     navTo('admin');
     setView('admin');
   }
   function logout() {
-    sessionStorage.removeItem(TOKEN_KEY);
+    adminToken.clear();
     setToken('');
     goHome();
+  }
+
+  if (isSuperPath()) {
+    return <SuperAdmin />;
   }
 
   if (view === 'admin') {
@@ -171,7 +189,8 @@ function UserPanel() {
 /* ─────────────────────────── Login ─────────────────────────── */
 
 function LoginPanel({ onLoggedIn, onCancel }) {
-  const [secret, setSecret] = useState('');
+  const [name, setName] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
 
@@ -181,6 +200,82 @@ function LoginPanel({ onLoggedIn, onCancel }) {
     setError(null);
     try {
       const res = await fetch(api('api/admin/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, password }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Login failed.');
+      onLoggedIn(data.token);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form className="card" onSubmit={login}>
+      <h2>Merchant login</h2>
+      <p className="subtitle">Sign in with the name and password you were given.</p>
+      <label htmlFor="mname">Name</label>
+      <input id="mname" type="text" value={name} onChange={(e) => setName(e.target.value)} autoFocus autoComplete="username" />
+      <label htmlFor="pw">Password</label>
+      <input id="pw" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+      {error && <p className="status err">{error}</p>}
+      <div className="row">
+        <button type="submit" disabled={loading || name.trim() === '' || password === ''}>
+          {loading ? 'Checking…' : 'Log in'}
+        </button>
+        <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+/* ─────────────────────────── Super-admin ─────────────────────────── */
+
+function SuperAdmin() {
+  const [token, setToken] = useState(() => sessionStorage.getItem(SUPER_TOKEN_KEY) || '');
+
+  function onLoggedIn(t) {
+    sessionStorage.setItem(SUPER_TOKEN_KEY, t);
+    setToken(t);
+  }
+  function logout() {
+    sessionStorage.removeItem(SUPER_TOKEN_KEY);
+    setToken('');
+  }
+
+  return (
+    <div className="site">
+      <header className="site-top">
+        <div className="brand">
+          <img src={LOGO} alt="DealVerse" className="brand-logo" />
+          <span className="brand-name">DealVerse · Super-admin</span>
+        </div>
+        {token && <button className="link" onClick={logout}>Log out</button>}
+      </header>
+      <main className="site-main">
+        {token
+          ? <SuperPanel token={token} onUnauthorized={logout} />
+          : <SuperLogin onLoggedIn={onLoggedIn} />}
+      </main>
+    </div>
+  );
+}
+
+function SuperLogin({ onLoggedIn }) {
+  const [secret, setSecret] = useState('');
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  async function login(e) {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(api('api/super/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ secret }),
@@ -197,18 +292,151 @@ function LoginPanel({ onLoggedIn, onCancel }) {
 
   return (
     <form className="card" onSubmit={login}>
-      <h2>Admin login</h2>
-      <p className="subtitle">Enter the admin password.</p>
-      <label htmlFor="pw">Password</label>
-      <input id="pw" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoFocus />
+      <h2>Super-admin login</h2>
+      <p className="subtitle">Enter the super-admin password to manage merchants.</p>
+      <label htmlFor="spw">Password</label>
+      <input id="spw" type="password" value={secret} onChange={(e) => setSecret(e.target.value)} autoFocus />
       {error && <p className="status err">{error}</p>}
       <div className="row">
         <button type="submit" disabled={loading || secret === ''}>
           {loading ? 'Checking…' : 'Log in'}
         </button>
-        <button type="button" className="secondary" onClick={onCancel}>Cancel</button>
       </div>
     </form>
+  );
+}
+
+function SuperPanel({ token, onUnauthorized }) {
+  const [merchants, setMerchants] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newPass, setNewPass] = useState('');
+  const [created, setCreated] = useState(null);
+
+  const call = async (p, opts = {}) => {
+    const res = await fetch(api(p), {
+      ...opts,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(opts.headers || {}) },
+    });
+    if (res.status === 401) {
+      onUnauthorized();
+      throw new Error('Session expired.');
+    }
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Request failed.');
+    return data;
+  };
+
+  async function load() {
+    setError(null);
+    try {
+      const data = await call('api/super/merchants');
+      setMerchants(data.merchants || []);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  async function add(e) {
+    e.preventDefault();
+    setBusy('add');
+    setError(null);
+    setCreated(null);
+    try {
+      const data = await call('api/super/merchants/add', {
+        method: 'POST',
+        body: JSON.stringify({ name: newName, password: newPass }),
+      });
+      setMerchants(data.merchants || []);
+      setCreated({ name: newName, password: newPass });
+      setNewName('');
+      setNewPass('');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function act(path, id, key) {
+    setBusy(key);
+    setError(null);
+    try {
+      const data = await call(path, { method: 'POST', body: JSON.stringify({ id }) });
+      setMerchants(data.merchants || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function del(id, name) {
+    if (!window.confirm(`Delete merchant "${name}"? This permanently wipes all of its data (bot, channels, listeners, config, audit). This cannot be undone.`)) {
+      return;
+    }
+    await act('api/super/merchants/delete', id, `del-${id}`);
+  }
+
+  return (
+    <div className="card" style={{ maxWidth: 720 }}>
+      <h2>Merchants</h2>
+      <p className="subtitle">Create, deactivate, or delete merchant accounts. Each merchant is fully isolated.</p>
+
+      {error && <p className="status err">{error}</p>}
+
+      {merchants === null && <p className="meta">Loading…</p>}
+
+      {merchants && merchants.length > 0 && (
+        <div className="merchant-list">
+          {merchants.map((m) => (
+            <div key={m.id} className="merchant-row">
+              <div className="merchant-info">
+                <span className="merchant-name">{m.name}</span>
+                <span className={`badge ${m.active ? 'ok' : 'off'}`}>{m.active ? 'Active' : 'Deactivated'}</span>
+                {m.id === 'default' && <span className="badge">default</span>}
+              </div>
+              <div className="row">
+                {m.active
+                  ? <button className="secondary" disabled={busy === `deact-${m.id}`} onClick={() => act('api/super/merchants/deactivate', m.id, `deact-${m.id}`)}>
+                      {busy === `deact-${m.id}` ? '…' : 'Deactivate'}
+                    </button>
+                  : <button className="secondary" disabled={busy === `act-${m.id}`} onClick={() => act('api/super/merchants/activate', m.id, `act-${m.id}`)}>
+                      {busy === `act-${m.id}` ? '…' : 'Activate'}
+                    </button>}
+                {m.id !== 'default' && (
+                  <button className="danger" disabled={busy === `del-${m.id}`} onClick={() => del(m.id, m.name)}>
+                    {busy === `del-${m.id}` ? '…' : 'Delete'}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <form className="add-merchant" onSubmit={add}>
+        <h3>Add a merchant</h3>
+        <label htmlFor="nm">Name</label>
+        <input id="nm" type="text" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. acme-deals" />
+        <label htmlFor="np">Password</label>
+        <input id="np" type="text" value={newPass} onChange={(e) => setNewPass(e.target.value)} placeholder="at least 4 characters" />
+        <div className="row">
+          <button type="submit" disabled={busy === 'add' || newName.trim() === '' || newPass.length < 4}>
+            {busy === 'add' ? 'Creating…' : 'Add merchant'}
+          </button>
+        </div>
+      </form>
+
+      {created && (
+        <p className="status ok">
+          Created <strong>{created.name}</strong>. Share these credentials — name <strong>{created.name}</strong>, password <strong>{created.password}</strong>. They log in at the normal <code>/admin</code> page.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -235,21 +463,25 @@ function AdminPanel({ token, onUnauthorized, onLogout, onHome }) {
 
   const nav = [
     ['amazon', 'Affiliate settings', IC.tag],
+    ['telegram-login', 'Telegram login', IC.key],
     ['telegram', 'Telegram bot', IC.send],
     ['listeners', 'Listener channels', IC.rss],
     ['automation', 'Automation', IC.clock],
     ['broadcasts', 'Custom messages', IC.mega],
+    ['import-users', 'Import users', IC.users],
     ['audit', 'Audit log', IC.list],
   ];
   const titles = Object.fromEntries(nav.map(([id, label]) => [id, label]));
 
   function renderSection() {
     switch (active) {
-      case 'amazon': return <AmazonConfig authFetch={authFetch} />;
+      case 'amazon': return <AmazonConfig authFetch={authFetch} onNavigate={go} />;
+      case 'telegram-login': return <TelegramLogin authFetch={authFetch} />;
       case 'telegram': return <TelegramConfig authFetch={authFetch} />;
-      case 'listeners': return <ListenerConfig authFetch={authFetch} />;
+      case 'listeners': return <ListenerConfig authFetch={authFetch} onNavigate={go} />;
       case 'automation': return <AutomationConfig authFetch={authFetch} />;
       case 'broadcasts': return <BroadcastConfig authFetch={authFetch} />;
+      case 'import-users': return <ImportUsers authFetch={authFetch} onNavigate={go} />;
       case 'audit': return <AuditConfig authFetch={authFetch} />;
       default: return null;
     }
@@ -498,10 +730,27 @@ function AutomationConfig({ authFetch }) {
 
 // Collapsed by default; mounts its children only when first opened.
 // `bare` renders a lighter box for nested sub-sections.
-function Collapsible({ title, children, bare = false, defaultOpen = false }) {
+// Sliding on/off toggle switch (pill + knob). Use this wherever a toggle is
+// wanted instead of a plain checkbox.
+function Toggle({ checked, onChange, label, disabled = false }) {
+  return (
+    <label className={`toggle-sw${disabled ? ' is-disabled' : ''}`}>
+      <input
+        type="checkbox"
+        checked={!!checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="toggle-track"><span className="toggle-knob" /></span>
+      {label && <span className="toggle-label">{label}</span>}
+    </label>
+  );
+}
+
+function Collapsible({ title, children, bare = false, defaultOpen = false, className = '' }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className={bare ? 'subcoll' : 'card'}>
+    <div className={`${bare ? 'subcoll' : 'card'}${className ? ' ' + className : ''}`}>
       <div className="collhead" onClick={() => setOpen((o) => !o)}>
         <h2>{title}</h2>
         <span className="chev">{open ? '▲' : '▼'}</span>
@@ -511,9 +760,10 @@ function Collapsible({ title, children, bare = false, defaultOpen = false }) {
   );
 }
 
-function AmazonConfig({ authFetch }) {
+function AmazonConfig({ authFetch, onNavigate }) {
   const [mode, setMode] = useState('TAG');
   const [tag, setTag] = useState('');
+  const [amazonActive, setAmazonActive] = useState(true);
   const [curl, setCurl] = useState('');
   const [status, setStatus] = useState(null);
   const [amazonSave, setAmazonSave] = useState(null);
@@ -522,6 +772,14 @@ function AmazonConfig({ authFetch }) {
   const [savingCurl, setSavingCurl] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testMsg, setTestMsg] = useState(null);
+  // Flipkart
+  const [fk, setFk] = useState({ active: false, botUsername: '' });
+  const [fkUser, setFkUser] = useState('');
+  const [savingFk, setSavingFk] = useState(false);
+  const [fkSave, setFkSave] = useState(null);
+  const [fkTestUrl, setFkTestUrl] = useState('');
+  const [fkTesting, setFkTesting] = useState(false);
+  const [fkTestMsg, setFkTestMsg] = useState(null);
 
   async function loadConfig() {
     const res = await authFetch('api/admin/config');
@@ -529,6 +787,11 @@ function AmazonConfig({ authFetch }) {
     if (data.amazon) {
       setMode(data.amazon.mode || 'TAG');
       setTag(data.amazon.tag || '');
+      setAmazonActive(data.amazon.active !== false);
+    }
+    if (data.flipkart) {
+      setFk(data.flipkart);
+      setFkUser(data.flipkart.botUsername || '');
     }
     setStatus(data.sitestripe || null);
   }
@@ -536,6 +799,40 @@ function AmazonConfig({ authFetch }) {
     loadConfig().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function toggleAmazon(next) {
+    setAmazonActive(next);
+    try {
+      await authFetch('api/admin/amazon/active', { method: 'POST', body: JSON.stringify({ active: next }) });
+    } catch { setAmazonActive(!next); }
+  }
+
+  async function saveFlipkart(next) {
+    setSavingFk(true); setFkSave(null);
+    try {
+      const body = next || { active: fk.active, botUsername: fkUser };
+      const res = await authFetch('api/admin/flipkart', { method: 'POST', body: JSON.stringify(body) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Save failed.');
+      setFk(data.flipkart); setFkUser(data.flipkart.botUsername || '');
+      setFkSave({ type: 'ok', text: 'Saved.' });
+    } catch (e) {
+      setFkSave({ type: 'err', text: e.message });
+      loadConfig().catch(() => {});
+    } finally { setSavingFk(false); }
+  }
+
+  async function testFlipkart() {
+    setFkTesting(true); setFkTestMsg(null);
+    try {
+      const res = await authFetch('api/admin/flipkart/test', { method: 'POST', body: JSON.stringify({ url: fkTestUrl }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Test failed.');
+      setFkTestMsg({ type: 'ok', text: `Converted → ${data.result.affiliateUrl}` });
+    } catch (e) {
+      setFkTestMsg({ type: 'err', text: e.message });
+    } finally { setFkTesting(false); }
+  }
 
   async function saveAmazon() {
     setSavingAmazon(true);
@@ -598,71 +895,134 @@ function AmazonConfig({ authFetch }) {
         </div>
       )}
 
-      <p className="subtitle">Choose how affiliate links are generated.</p>
+      <p className="subtitle">Choose which stores are active and how their affiliate links are generated. Expand a store to configure it.</p>
 
-      <label>Mode</label>
-      <div className="toggle">
-        <label className="opt">
-          <input type="radio" name="mode" checked={mode === 'TAG'} onChange={() => setMode('TAG')} />
-          TAG <span className="meta">— rewrite URL with an associate tag</span>
-        </label>
-        <label className="opt">
-          <input type="radio" name="mode" checked={mode === 'SITE_STRIPE'} onChange={() => setMode('SITE_STRIPE')} />
-          SITE_STRIPE <span className="meta">— live SiteStripe link, TAG fallback</span>
-        </label>
-      </div>
+      {/* ── Amazon ─────────────────────────────────────────────────────── */}
+      <Collapsible
+        className="platform-section"
+        title={
+          <span className="platform-title">
+            Amazon
+            <span className={`badge ${amazonActive ? 'ok' : 'off'}`}>{amazonActive ? 'Active' : 'Off'}</span>
+          </span>
+        }
+      >
+        <div className="platform-switch">
+          <Toggle checked={amazonActive} onChange={toggleAmazon} label="Amazon enabled" />
+        </div>
 
-      <label htmlFor="tag" style={{ marginTop: 16 }}>Associate tag</label>
-      <input id="tag" type="text" value={tag} onChange={(e) => setTag(e.target.value)} placeholder="e.g. dealverse08-21" />
-      <p className="meta">Used for TAG mode and as the SITE_STRIPE fallback.</p>
+        <Collapsible title="Link mode &amp; tag" bare>
+          <label>Mode</label>
+          <div className="toggle">
+            <label className="opt">
+              <input type="radio" name="mode" checked={mode === 'TAG'} onChange={() => setMode('TAG')} />
+              TAG <span className="meta">— rewrite URL with an associate tag</span>
+            </label>
+            <label className="opt">
+              <input type="radio" name="mode" checked={mode === 'SITE_STRIPE'} onChange={() => setMode('SITE_STRIPE')} />
+              SITE_STRIPE <span className="meta">— live SiteStripe link, TAG fallback</span>
+            </label>
+          </div>
 
-      <div className="row">
-        <button onClick={saveAmazon} disabled={savingAmazon}>{savingAmazon ? 'Saving…' : 'Save Settings'}</button>
-        {amazonSave && <span className={`status ${amazonSave.type}`}>{amazonSave.text}</span>}
-      </div>
+          <label htmlFor="tag" style={{ marginTop: 16 }}>Associate tag</label>
+          <input id="tag" type="text" value={tag} onChange={(e) => setTag(e.target.value)} placeholder="e.g. dealverse08-21" />
+          <p className="meta">Used for TAG mode and as the SITE_STRIPE fallback.</p>
 
-      <Collapsible title="SiteStripe session" bare defaultOpen={!!(status && status.configured)}>
-        <p className="subtitle">
-          Paste the SiteStripe <code>getShortUrl</code> cURL (DevTools → Network → Copy as cURL). Needed for SITE_STRIPE mode.
-        </p>
+          <div className="row">
+            <button onClick={saveAmazon} disabled={savingAmazon}>{savingAmazon ? 'Saving…' : 'Save Settings'}</button>
+            {amazonSave && <span className={`status ${amazonSave.type}`}>{amazonSave.text}</span>}
+          </div>
+        </Collapsible>
 
-        <div className="statusbox">
-          {status && status.configured ? (
-            <>
-              <div>
-                <strong>Session configured</strong>{' '}
-                {status.status === 'expired'
-                  ? <span className="badge" style={{ background: 'rgba(248,113,113,.14)', color: 'var(--red)', borderColor: 'rgba(248,113,113,.4)', marginLeft: 4 }}>expired</span>
-                  : <span className="badge ok" style={{ marginLeft: 4 }}>active</span>}
-              </div>
-              {status.status === 'expired' && (
-                <div className="status err" style={{ marginTop: 6 }}>
-                  ⚠ This SiteStripe session has expired — paste a fresh cURL below.
-                  {status.expiredAt ? ` (since ${new Date(status.expiredAt).toLocaleString()})` : ''}
+        <Collapsible title="SiteStripe session" bare>
+          <p className="subtitle">
+            Paste the SiteStripe <code>getShortUrl</code> cURL (DevTools → Network → Copy as cURL). Needed for SITE_STRIPE mode.
+          </p>
+
+          <div className="statusbox">
+            {status && status.configured ? (
+              <>
+                <div>
+                  <strong>Session configured</strong>{' '}
+                  {status.status === 'expired'
+                    ? <span className="badge" style={{ background: 'rgba(248,113,113,.14)', color: 'var(--red)', borderColor: 'rgba(248,113,113,.4)', marginLeft: 4 }}>expired</span>
+                    : <span className="badge ok" style={{ marginLeft: 4 }}>active</span>}
                 </div>
-              )}
-              <div className="meta">endpoint: {status.endpoint}</div>
-              <div className="meta">cookies: {status.hasCookies ? `${status.cookieCount} present` : 'none'}</div>
-              {status.configuredAt && <div className="meta">saved: {new Date(status.configuredAt).toLocaleString()}</div>}
-              {status.testedAt && <div className="meta">last tested: {new Date(status.testedAt).toLocaleString()}</div>}
-              <div className="row" style={{ marginTop: 10 }}>
-                <button className="secondary" onClick={testSession} disabled={testing}>{testing ? 'Testing…' : 'Test session'}</button>
-                {testMsg && <span className={`status ${testMsg.type}`}>{testMsg.text}</span>}
-              </div>
-            </>
-          ) : (
-            <div className="meta">No session configured yet.</div>
-          )}
+                {status.status === 'expired' && (
+                  <div className="status err" style={{ marginTop: 6 }}>
+                    ⚠ This SiteStripe session has expired — paste a fresh cURL below.
+                    {status.expiredAt ? ` (since ${new Date(status.expiredAt).toLocaleString()})` : ''}
+                  </div>
+                )}
+                <div className="meta">endpoint: {status.endpoint}</div>
+                <div className="meta">cookies: {status.hasCookies ? `${status.cookieCount} present` : 'none'}</div>
+                {status.configuredAt && <div className="meta">saved: {new Date(status.configuredAt).toLocaleString()}</div>}
+                {status.testedAt && <div className="meta">last tested: {new Date(status.testedAt).toLocaleString()}</div>}
+                <div className="row" style={{ marginTop: 10 }}>
+                  <button className="secondary" onClick={testSession} disabled={testing}>{testing ? 'Testing…' : 'Test session'}</button>
+                  {testMsg && <span className={`status ${testMsg.type}`}>{testMsg.text}</span>}
+                </div>
+              </>
+            ) : (
+              <div className="meta">No session configured yet.</div>
+            )}
+          </div>
+
+          <label htmlFor="curl">SiteStripe cURL</label>
+          <textarea id="curl" value={curl} onChange={(e) => setCurl(e.target.value)}
+            placeholder="curl 'https://www.amazon.in/associates/sitestripe/getShortUrl?...' -H '...' -b '...'" />
+
+          <div className="row">
+            <button onClick={saveCurl} disabled={savingCurl || curl.trim() === ''}>{savingCurl ? 'Saving…' : 'Save Session'}</button>
+            {curlSave && <span className={`status ${curlSave.type}`}>{curlSave.text}</span>}
+          </div>
+        </Collapsible>
+      </Collapsible>
+
+      {/* ── Flipkart ───────────────────────────────────────────────────── */}
+      <Collapsible
+        className="platform-section"
+        title={
+          <span className="platform-title">
+            Flipkart
+            <span className={`badge ${fk.active ? 'ok' : 'off'}`}>{fk.active ? 'Active' : 'Off'}</span>
+          </span>
+        }
+      >
+        <div className="platform-switch">
+          <Toggle
+            checked={fk.active}
+            onChange={(next) => saveFlipkart({ active: next, botUsername: fkUser })}
+            label="Flipkart enabled"
+          />
         </div>
 
-        <label htmlFor="curl">SiteStripe cURL</label>
-        <textarea id="curl" value={curl} onChange={(e) => setCurl(e.target.value)}
-          placeholder="curl 'https://www.amazon.in/associates/sitestripe/getShortUrl?...' -H '...' -b '...'" />
+        <Collapsible title="Conversion bot" bare>
+          <p className="subtitle">
+            Flipkart links are converted by your <strong>conversion bot</strong> (e.g. an EarnKaro bot). Because Telegram
+            bots can't message other bots, this runs through your logged-in Telegram account —
+            set that up under{' '}
+            <a className="inline-link" onClick={() => onNavigate && onNavigate('telegram-login')}>Telegram login</a>{' '}
+            first. Paste a Flipkart link anywhere Amazon works and it's converted the same way.
+          </p>
 
-        <div className="row">
-          <button onClick={saveCurl} disabled={savingCurl || curl.trim() === ''}>{savingCurl ? 'Saving…' : 'Save Session'}</button>
-          {curlSave && <span className={`status ${curlSave.type}`}>{curlSave.text}</span>}
-        </div>
+          <label htmlFor="fkbot">Conversion bot @username</label>
+          <input id="fkbot" type="text" value={fkUser} onChange={(e) => setFkUser(e.target.value)} placeholder="e.g. @EarnKaroBot" />
+          <div className="row">
+            <button onClick={() => saveFlipkart()} disabled={savingFk}>{savingFk ? 'Saving…' : 'Save Flipkart'}</button>
+            {fkSave && <span className={`status ${fkSave.type}`}>{fkSave.text}</span>}
+          </div>
+        </Collapsible>
+
+        <Collapsible title="Test Flipkart conversion" bare>
+          <p className="subtitle">Paste a real Flipkart product link to confirm the bot converts it. This messages your conversion bot only — it does not post to any channel.</p>
+          <label htmlFor="fktest">Flipkart product link</label>
+          <input id="fktest" type="text" value={fkTestUrl} onChange={(e) => setFkTestUrl(e.target.value)} placeholder="https://www.flipkart.com/... or https://dl.flipkart.com/..." />
+          <div className="row">
+            <button className="secondary" onClick={testFlipkart} disabled={fkTesting || fkTestUrl.trim() === ''}>{fkTesting ? 'Testing…' : 'Test conversion'}</button>
+          </div>
+          {fkTestMsg && <p className={`status ${fkTestMsg.type}`} style={{ wordBreak: 'break-all' }}>{fkTestMsg.text}</p>}
+        </Collapsible>
       </Collapsible>
     </>
   );
@@ -1013,18 +1373,27 @@ function ChannelModal({ authFetch, onClose, onSaved }) {
 
 /* ─────────────────────────── Listener channels ─────────────────────────── */
 
-function ListenerConfig({ authFetch }) {
+function ListenerConfig({ authFetch, onNavigate }) {
   const [listeners, setListeners] = useState([]);
   const [showAdd, setShowAdd] = useState(false);
   const [msgFor, setMsgFor] = useState(null); // { username, limit }
+  const [mtLoggedIn, setMtLoggedIn] = useState(null);
 
   async function load() {
     const res = await authFetch('api/admin/listener');
     const data = await res.json();
     setListeners(data.listeners || []);
   }
+  async function loadMt() {
+    try {
+      const res = await authFetch('api/admin/mtproto');
+      const data = await res.json();
+      setMtLoggedIn(!!(data.mtproto && data.mtproto.loggedIn));
+    } catch { setMtLoggedIn(false); }
+  }
   useEffect(() => {
     load().catch(() => {});
+    loadMt();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1040,11 +1409,16 @@ function ListenerConfig({ authFetch }) {
   return (
     <>
       <p className="subtitle">
-        Read Telegram channels and re-publish their Amazon deals with your affiliate link. Public channels
-        work with no setup; for private groups / preview-disabled channels, set up logged-in access below.
+        Read Telegram channels and re-publish their Amazon &amp; Flipkart deals with your affiliate links. Public
+        channels work with no setup; private groups / preview-disabled channels need Telegram login.
       </p>
 
-      <MtprotoAccess authFetch={authFetch} />
+      {mtLoggedIn === false && (
+        <div className="hintbox">
+          Private group or preview-disabled channel? You'll need to log in with a Telegram user account first.{' '}
+          <a className="inline-link" onClick={() => onNavigate && onNavigate('telegram-login')}>Set up Telegram login →</a>
+        </div>
+      )}
 
       <div className="sub-title" style={{ marginTop: 20 }}>Channels</div>
       {listeners.length === 0 && <p className="meta">No listener channels yet.</p>}
@@ -1065,6 +1439,7 @@ function ListenerConfig({ authFetch }) {
       {showAdd && (
         <AddListenerModal
           authFetch={authFetch}
+          onNavigate={onNavigate}
           onClose={() => setShowAdd(false)}
           onSaved={() => { setShowAdd(false); load(); }}
         />
@@ -1152,7 +1527,7 @@ function ListenerRow({ channel, onOpen, onRemove, onSaveAutomation }) {
   );
 }
 
-function AddListenerModal({ authFetch, onClose, onSaved }) {
+function AddListenerModal({ authFetch, onClose, onSaved, onNavigate }) {
   const [channel, setChannel] = useState('');
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1204,7 +1579,19 @@ function AddListenerModal({ authFetch, onClose, onSaved }) {
       <div className="row">
         <button className="secondary" onClick={test} disabled={busy || channel.trim() === ''}>{busy ? 'Reading…' : 'Test read'}</button>
       </div>
-      {error && <p className="status err">{error}</p>}
+      {error && (
+        <>
+          <p className="status err">{error}</p>
+          {/(log ?in|logged.?in|member|private|mtproto|preview)/i.test(error) && (
+            <p className="meta">
+              This looks like a private group / preview-disabled channel.{' '}
+              <a className="inline-link" onClick={() => { onClose(); onNavigate && onNavigate('telegram-login'); }}>
+                Set up Telegram login →
+              </a>
+            </p>
+          )}
+        </>
+      )}
 
       {preview && (
         <>
@@ -1368,6 +1755,310 @@ function ListenerMessagesModal({ authFetch, channel, limit, onClose }) {
   );
 }
 
+/* ─────────────────────────── Telegram login (New) ─────────────────────────── */
+
+function TelegramLogin({ authFetch }) {
+  return (
+    <>
+      <p className="subtitle">
+        <span className="badge">new · optional</span> Log in with a Telegram <strong>user account</strong> (not the bot).
+        This unlocks three things: reading <strong>private groups</strong> / preview-disabled channels in listeners,
+        converting <strong>Flipkart</strong> links through your conversion bot, and <strong>importing users</strong>.
+        It's read-only for listening; nothing is auto-posted from here.
+      </p>
+
+      <div className="guide">
+        <div className="sub-title">Setup — two steps</div>
+        <ol className="steps">
+          <li>
+            <strong>Get your API keys.</strong> Open <code>my.telegram.org</code> → log in → <em>API development tools</em> →
+            create an app. Copy the <code>api_id</code> (a number) and <code>api_hash</code> (a long hex string).
+            You can create these on any of your accounts.
+          </li>
+          <li>
+            <strong>Log in with your phone.</strong> Save the keys below, then click <em>Log in with phone</em>, enter the
+            code Telegram sends you (and your 2-step password if you have one). Use the account that is a <em>member</em>
+            of the groups you want to read / import from.
+          </li>
+        </ol>
+        <p className="meta">Your api_hash and session are stored securely and never shown again. Use “Clear credentials” to switch accounts.</p>
+      </div>
+
+      <MtprotoAccess authFetch={authFetch} startOpen />
+    </>
+  );
+}
+
+/* ─────────────────────────── Import users (beta) ─────────────────────────── */
+
+function ImportUsers({ authFetch, onNavigate }) {
+  const [loggedIn, setLoggedIn] = useState(null);
+  const [dialogs, setDialogs] = useState([]);
+  const [pool, setPool] = useState(null);
+  // fetch phase
+  const [source, setSource] = useState('');
+  const [fetchLimit, setFetchLimit] = useState(200);
+  const [fetching, setFetching] = useState(false);
+  const [fetchMsg, setFetchMsg] = useState(null);
+  // add phase (manual, one user at a time)
+  const [target, setTarget] = useState('');
+  const [addingId, setAddingId] = useState(null);
+  const [sendingId, setSendingId] = useState(null);
+  const [rowErr, setRowErr] = useState({});
+  const [floodStop, setFloodStop] = useState(false);
+  const [addMsg, setAddMsg] = useState(null);
+  const [errPopup, setErrPopup] = useState(null);
+  // invite/DM message template
+  const [message, setMessage] = useState('');
+  const [savingMsg, setSavingMsg] = useState(false);
+  const [msgSaved, setMsgSaved] = useState(false);
+  const [syncBusy, setSyncBusy] = useState(false);
+
+  async function loadPool() {
+    const res = await authFetch('api/admin/mtproto/import/status');
+    const data = await res.json();
+    if (data.pool) { setPool(data.pool); setMessage((m) => m || data.pool.message || ''); }
+  }
+  async function init() {
+    try {
+      const res = await authFetch('api/admin/mtproto');
+      const data = await res.json();
+      const li = !!(data.mtproto && data.mtproto.loggedIn);
+      setLoggedIn(li);
+      if (li) {
+        const dres = await authFetch('api/admin/mtproto/dialogs', { method: 'POST', body: JSON.stringify({ limit: 100 }) });
+        const ddata = await dres.json();
+        setDialogs((ddata.dialogs || []).filter((d) => d.isGroup || d.isChannel));
+        await loadPool();
+      }
+    } catch { setLoggedIn(false); }
+  }
+  useEffect(() => { init(); /* eslint-disable-next-line */ }, []);
+
+  async function fetchMembers() {
+    if (!source.trim()) return;
+    setFetching(true); setFetchMsg(null);
+    try {
+      const res = await authFetch('api/admin/mtproto/import/fetch', { method: 'POST', body: JSON.stringify({ source, limit: Number(fetchLimit) }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Fetch failed.');
+      setPool(data.pool);
+      setFetchMsg({ type: 'ok', text: `Pool now has ${data.pool.counts.pending} pending member(s).` });
+    } catch (e) { setFetchMsg({ type: 'err', text: e.message }); } finally { setFetching(false); }
+  }
+
+  async function addOne(id) {
+    if (!target.trim()) { setErrPopup('Select a destination channel at the top of Step 2 first.'); return; }
+    setAddingId(id); setAddMsg(null);
+    setRowErr((p) => { const n = { ...p }; delete n[id]; return n; });
+    try {
+      const res = await authFetch('api/admin/mtproto/import/add-one', { method: 'POST', body: JSON.stringify({ target, userId: id }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Add failed.');
+      const r = data.result;
+      if (r.pool) setPool(r.pool);
+      if (r.status !== 'added') {
+        // Surface the whole raw Telegram error in a pop-up.
+        const full = r.error || `Telegram returned status: ${r.status}`;
+        setErrPopup(full);
+        setRowErr((p) => ({ ...p, [id]: full }));
+        if (r.status === 'flood') setFloodStop(true);
+      }
+    } catch (e) {
+      setErrPopup(e.message); // e.g. daily cap reached, channel resolve failed, session expired
+    } finally { setAddingId(null); }
+  }
+
+  async function saveMessage() {
+    setSavingMsg(true); setMsgSaved(false);
+    try {
+      const res = await authFetch('api/admin/mtproto/import/message', { method: 'POST', body: JSON.stringify({ message }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Save failed.');
+      if (data.pool) setPool(data.pool);
+      setMsgSaved(true);
+    } catch (e) { setErrPopup(e.message); } finally { setSavingMsg(false); }
+  }
+
+  async function sendOne(id) {
+    if (!message.trim()) { setErrPopup('Write the invite message first (the box at the top of Step 2).'); return; }
+    setSendingId(id); setRowErr((p) => { const n = { ...p }; delete n[id]; return n; });
+    try {
+      const res = await authFetch('api/admin/mtproto/import/send-one', { method: 'POST', body: JSON.stringify({ userId: id, message }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Send failed.');
+      const r = data.result;
+      if (r.pool) setPool(r.pool);
+      if (r.status !== 'sent') {
+        const full = r.error || `Telegram returned status: ${r.status}`;
+        setErrPopup(full);
+        setRowErr((p) => ({ ...p, [id]: full }));
+        if (r.status === 'flood') setFloodStop(true);
+      }
+    } catch (e) { setErrPopup(e.message); } finally { setSendingId(null); }
+  }
+
+  async function syncTarget() {
+    if (!target.trim()) { setErrPopup('Select the target channel first.'); return; }
+    setSyncBusy(true);
+    try {
+      const res = await authFetch('api/admin/mtproto/import/sync-target', { method: 'POST', body: JSON.stringify({ target }) });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Sync failed.');
+      if (data.result && data.result.pool) setPool(data.result.pool);
+      setAddMsg({ type: 'ok', text: `Removed ${data.result.removed} member(s) already in the channel.` });
+    } catch (e) { setErrPopup(e.message); } finally { setSyncBusy(false); }
+  }
+
+  async function clearPool() {
+    if (!confirm('Clear the saved candidate pool? This does not remove anyone already added to your channel.')) return;
+    const res = await authFetch('api/admin/mtproto/import/clear', { method: 'POST', body: '{}' });
+    const data = await res.json();
+    if (data.pool) { setPool(data.pool); setRowErr({}); setFloodStop(false); setFetchMsg(null); setAddMsg(null); }
+  }
+
+  if (loggedIn === null) return <p className="meta">Loading…</p>;
+
+  if (!loggedIn) {
+    return (
+      <>
+        <p className="subtitle">
+          <span className="badge">beta</span> Import members from a group you're in into your own channel.
+        </p>
+        <div className="hintbox">
+          This needs a logged-in Telegram user account.{' '}
+          <a className="inline-link" onClick={() => onNavigate && onNavigate('telegram-login')}>Set up Telegram login →</a>
+        </div>
+      </>
+    );
+  }
+
+  const c = (pool && pool.counts) || { total: 0, pending: 0, added: 0, privacy: 0, failed: 0 };
+
+  return (
+    <>
+      <p className="subtitle">
+        <span className="badge">beta</span> <strong>Step 1:</strong> fetch members from a source group into a saved pool.{' '}
+        <strong>Step 2:</strong> pick your channel, then add members <strong>one at a time</strong> by clicking each row.
+      </p>
+
+      <div className="banner-warn">
+        ⚠ <strong>Use sparingly.</strong> Telegram treats bulk-adding as spam — most people's privacy blocks it, and your
+        account gets <strong>flood-limited after only a few</strong>. Fetching is safe (read-only); each add is the risky
+        part (capped 30/day). Add a little, over days. Any Telegram error is shown to you in full.
+      </div>
+
+      {/* Pool status */}
+      <div className="statusbox">
+        <div className="pool-stats">
+          <span className="pool-stat"><b>{c.total}</b> in pool</span>
+          <span className="pool-stat pending"><b>{c.pending}</b> pending</span>
+          <span className="pool-stat added"><b>{c.added}</b> added</span>
+          <span className="pool-stat privacy"><b>{c.privacy}</b> privacy-blocked</span>
+          <span className="pool-stat failed"><b>{c.failed}</b> failed</span>
+        </div>
+        {pool && pool.source && <div className="meta" style={{ marginTop: 6 }}>source: {pool.source}{pool.fetchedAt ? ` · fetched ${new Date(pool.fetchedAt).toLocaleString()}` : ''}</div>}
+        {pool && pool.target && <div className="meta">last target: {pool.target}</div>}
+        {c.total > 0 && (
+          <div className="row" style={{ marginTop: 10 }}>
+            <button className="link danger" onClick={clearPool}>Clear pool</button>
+          </div>
+        )}
+      </div>
+
+      {/* Step 1 — fetch */}
+      <Collapsible title="Step 1 · Fetch members into the pool" bare defaultOpen={c.total === 0}>
+        <label htmlFor="src">Source group (this account must be a member)</label>
+        <input id="src" type="text" value={source} onChange={(e) => setSource(e.target.value)} placeholder="@somegroup or https://t.me/somegroup" />
+        <label htmlFor="flim" style={{ marginTop: 12 }}>Max members to read this fetch</label>
+        <input id="flim" className="num" type="number" min="1" max="500" value={fetchLimit} onChange={(e) => setFetchLimit(e.target.value)} style={{ width: 90 }} />
+        <p className="meta">Reading is safe. New members are added to the pool as “pending”; duplicates are skipped.</p>
+        <div className="row">
+          <button onClick={fetchMembers} disabled={fetching || !source.trim()}>{fetching ? 'Fetching…' : 'Fetch members'}</button>
+          {fetchMsg && <span className={`status ${fetchMsg.type}`}>{fetchMsg.text}</span>}
+        </div>
+      </Collapsible>
+
+      {/* Step 2 — add / message members one by one */}
+      <Collapsible title={`Step 2 · Add members to your channel${pool && pool.users ? ` (${pool.users.length})` : ''}`} bare defaultOpen={c.total > 0}>
+        <label htmlFor="tgt">Target — your channel/group (only ones you admin are listed)</label>
+        <select id="tgt" className="select" value={target} onChange={(e) => { setTarget(e.target.value); setAddMsg(null); }}>
+          <option value="">Select a destination…</option>
+          {dialogs.filter((d) => d.admin).map((d) => (
+            <option key={d.id} value={d.username || d.id}>
+              {d.title}{d.username ? ` (@${d.username})` : ''}
+            </option>
+          ))}
+        </select>
+        {dialogs.length > 0 && dialogs.filter((d) => d.admin).length === 0 && (
+          <p className="meta">No channels where this account is an admin. Make this account an admin (with “Add members”) of your channel.</p>
+        )}
+        <div className="row" style={{ marginTop: 8 }}>
+          <button className="secondary" onClick={syncTarget} disabled={syncBusy || !target.trim()}>
+            {syncBusy ? 'Checking…' : 'Remove members already in this channel'}
+          </button>
+          {addMsg && <span className={`status ${addMsg.type}`}>{addMsg.text}</span>}
+        </div>
+
+        {/* Invite / DM message template */}
+        <label htmlFor="invmsg" style={{ marginTop: 16 }}>Invite message (used by “Send message”)</label>
+        <textarea id="invmsg" value={message} onChange={(e) => { setMessage(e.target.value); setMsgSaved(false); }}
+          placeholder={'Hi! Join our channel for the best prices + an extra 2% cashback from us — guaranteed lowest, just try once.\nChannel: https://t.me/yourchannel\nBot: https://t.me/yourbot'} />
+        <div className="row">
+          <button className="secondary" onClick={saveMessage} disabled={savingMsg}>{savingMsg ? 'Saving…' : 'Save message'}</button>
+          {msgSaved && <span className="status ok">✓ saved</span>}
+        </div>
+        <p className="meta">
+          Tip: if adding hits a flood limit, you can still <strong>Send message</strong> to invite people to join on their own.
+          But note — cold-DMing strangers is also treated as spam and can get the account limited; use it sparingly (max {20}/day).
+        </p>
+
+        {floodStop && (
+          <div className="banner-warn" style={{ marginTop: 12 }}>
+            ⛔ Telegram hit this account with a <strong>flood limit</strong>. Stop now and wait (hours–days) — retrying makes it
+            worse. Check <code>@SpamBot</code> in Telegram for status. The pool is saved; continue later.
+          </div>
+        )}
+
+        {(!pool || !pool.users || pool.users.length === 0) ? (
+          <p className="meta" style={{ marginTop: 12 }}>No members in the pool yet — fetch some in Step 1.</p>
+        ) : (
+          <div className="pool-list" style={{ marginTop: 12 }}>
+            {pool.users.map((u) => (
+              <div key={u.id} className="pool-row">
+                <span className="pool-user">{u.username ? '@' + u.username : (u.firstName || 'user')}</span>
+                <span className={`badge ${u.status === 'added' ? 'ok' : u.status === 'pending' ? '' : 'off'}`}>{u.status}</span>
+                {u.messagedAt && <span className="badge" title={`messaged ${new Date(u.messagedAt).toLocaleString()}`}>messaged</span>}
+                <span className="pool-actions">
+                  {u.status === 'pending' && (
+                    <button className="secondary pool-btn" disabled={!target.trim() || addingId === u.id || floodStop} onClick={() => addOne(u.id)}>
+                      {addingId === u.id ? 'Adding…' : 'Add to channel'}
+                    </button>
+                  )}
+                  <button className="secondary pool-btn" disabled={sendingId === u.id || floodStop} onClick={() => sendOne(u.id)}>
+                    {sendingId === u.id ? 'Sending…' : 'Send message'}
+                  </button>
+                </span>
+                {(rowErr[u.id] || u.lastError || u.messageError) && <span className="meta pool-err">{rowErr[u.id] || u.lastError || u.messageError}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </Collapsible>
+
+      {errPopup && (
+        <Modal title="Telegram response" onClose={() => setErrPopup(null)}>
+          <p className="subtitle">The add did not go through. Telegram's exact response:</p>
+          <pre className="err-dump">{errPopup}</pre>
+          <div className="row">
+            <button className="secondary" onClick={() => setErrPopup(null)}>Close</button>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 /* ─────────────────────────── MTProto (beta) ─────────────────────────── */
 
 // Replace each source link in a message with its affiliate link (shared shape
@@ -1387,7 +2078,7 @@ function composeAffiliateText(msg) {
 // Optional "logged-in Telegram access" — shown at the top of the Listener
 // section. Enables reading private groups / preview-disabled channels. When
 // present, listeners auto-use it; without it they read public channels only.
-function MtprotoAccess({ authFetch }) {
+function MtprotoAccess({ authFetch, startOpen = false }) {
   const [st, setSt] = useState(null);
   const [apiId, setApiId] = useState('');
   const [apiHash, setApiHash] = useState('');
@@ -1436,7 +2127,7 @@ function MtprotoAccess({ authFetch }) {
     : apiConfigured ? 'credentials saved · not logged in' : 'not set up';
 
   return (
-    <Collapsible title={`Logged-in Telegram access — ${summary}`} bare>
+    <Collapsible title={`Logged-in Telegram access — ${summary}`} bare defaultOpen={startOpen}>
       <p className="subtitle">
         <span className="badge">beta · optional</span> Not required. Without it, listeners read only
         <strong> public channels</strong> with a t.me preview. Log in with a Telegram <strong>user account</strong>

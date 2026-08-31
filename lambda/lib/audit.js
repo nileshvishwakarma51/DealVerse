@@ -1,25 +1,29 @@
 'use strict';
 
-// Small structured audit trail in DynamoDB. Each entry is its own item with a
-// `ttl` so DynamoDB auto-deletes it after 2 days. Logging is best-effort and
-// never throws into the caller.
+// Per-tenant audit trail in DynamoDB. Each entry is its own item, id-prefixed by
+// the tenant, with a `ttl` so DynamoDB auto-deletes it after 2 days. Best-effort.
 const crypto = require('crypto');
 const {
   DynamoDBClient,
   PutItemCommand,
   ScanCommand,
+  DeleteItemCommand,
 } = require('@aws-sdk/client-dynamodb');
+const { getTenant } = require('./store');
 
 const ddb = new DynamoDBClient({});
 const TABLE_NAME = process.env.TABLE_NAME;
 const PREFIX = 'AUDIT#';
 const TTL_SECONDS = 2 * 24 * 60 * 60; // 2 days
 
+function tenantPrefix(tid) {
+  return `${PREFIX}${tid}#`;
+}
+
 async function logAudit(type, message) {
   try {
     const now = Date.now();
-    const at = new Date(now).toISOString();
-    const id = `${PREFIX}${now}#${crypto.randomBytes(4).toString('hex')}`;
+    const id = `${tenantPrefix(getTenant())}${now}#${crypto.randomBytes(4).toString('hex')}`;
     await ddb.send(
       new PutItemCommand({
         TableName: TABLE_NAME,
@@ -27,7 +31,7 @@ async function logAudit(type, message) {
           id: { S: id },
           type: { S: String(type || 'info') },
           message: { S: String(message || '').slice(0, 500) },
-          at: { S: at },
+          at: { S: new Date(now).toISOString() },
           ttl: { N: String(Math.floor(now / 1000) + TTL_SECONDS) },
         },
       })
@@ -43,7 +47,7 @@ async function listAudit(limit = 60) {
       new ScanCommand({
         TableName: TABLE_NAME,
         FilterExpression: 'begins_with(id, :p)',
-        ExpressionAttributeValues: { ':p': { S: PREFIX } },
+        ExpressionAttributeValues: { ':p': { S: tenantPrefix(getTenant()) } },
       })
     );
     const items = (res.Items || []).map((it) => ({
@@ -58,4 +62,23 @@ async function listAudit(limit = 60) {
   }
 }
 
-module.exports = { logAudit, listAudit };
+// Delete every audit row for a tenant (used when a merchant is deleted).
+async function purgeTenant(tid) {
+  try {
+    const res = await ddb.send(
+      new ScanCommand({
+        TableName: TABLE_NAME,
+        FilterExpression: 'begins_with(id, :p)',
+        ExpressionAttributeValues: { ':p': { S: tenantPrefix(tid) } },
+        ProjectionExpression: 'id',
+      })
+    );
+    for (const it of res.Items || []) {
+      await ddb.send(new DeleteItemCommand({ TableName: TABLE_NAME, Key: { id: it.id } }));
+    }
+  } catch {
+    /* best-effort */
+  }
+}
+
+module.exports = { logAudit, listAudit, purgeTenant };

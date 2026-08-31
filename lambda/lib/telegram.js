@@ -5,7 +5,7 @@
 const crypto = require('crypto');
 const { ApiError } = require('./errors');
 const { getConfig, setConfig } = require('./store');
-const { generateAmazonLink } = require('./affiliate');
+const { generateLink } = require('./affiliate');
 const { logAudit } = require('./audit');
 
 const TELEGRAM_KEY = 'telegram';
@@ -73,7 +73,8 @@ async function connectBot(rawToken, webhookUrl) {
   if (!isValidTokenFormat(token)) {
     throw new ApiError(400, 'That does not look like a valid Telegram bot token.');
   }
-  if (!/^https:\/\/.+\/telegram\/webhook$/.test(webhookUrl)) {
+  // Accept both the bare path (default merchant) and the per-tenant suffix.
+  if (!/^https:\/\/.+\/telegram\/webhook(?:\/[^/]+)?$/.test(webhookUrl)) {
     throw new ApiError(400, 'Invalid webhook URL.');
   }
   const me = await getMe(token); // throws if the token is wrong
@@ -123,6 +124,41 @@ async function removeBot() {
   }
   await setConfig(TELEGRAM_KEY, {});
   return {};
+}
+
+// Silence the bot WITHOUT forgetting it: delete the Telegram webhook but keep
+// the stored token/config, so it can be restored on reactivation. Used when a
+// merchant is deactivated by the super-admin.
+async function silenceBot() {
+  const cfg = await getConfig(TELEGRAM_KEY);
+  if (cfg && cfg.token) {
+    try {
+      await tgCall(cfg.token, 'deleteWebhook', { drop_pending_updates: true });
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+// Re-register the stored bot's webhook (used on reactivation). Best-effort; a
+// missing token is a no-op. Reuses the stored secret when present.
+async function restoreBot(webhookUrl) {
+  const cfg = await getConfig(TELEGRAM_KEY);
+  if (!cfg || !cfg.token) return;
+  const secret = cfg.webhookSecret || crypto.randomBytes(24).toString('hex');
+  try {
+    await tgCall(cfg.token, 'setWebhook', {
+      url: webhookUrl,
+      secret_token: secret,
+      allowed_updates: ['message', 'channel_post'],
+      drop_pending_updates: true,
+    });
+    cfg.webhookSecret = secret;
+    cfg.webhookUrl = webhookUrl;
+    await setConfig(TELEGRAM_KEY, cfg);
+  } catch {
+    /* best-effort */
+  }
 }
 
 // Send a test message to a chat/channel id using the stored bot.
@@ -244,8 +280,10 @@ function formatAffiliateMessage(result) {
 }
 
 const HELP_TEXT =
-  'Send me an Amazon product link (amazon.in, amazon.com, a.co, amzn.to …) and ' +
-  'I will reply with an affiliate link.\n\nCommands:\n/start — welcome\n/help — this message';
+  'Send me an Amazon or Flipkart product link and I will reply with an affiliate link.\n\n' +
+  '• Amazon — amazon.in, amazon.com, a.co, amzn.to …\n' +
+  '• Flipkart — flipkart.com, dl.flipkart.com, fkrt.it …\n\n' +
+  'Commands:\n/start — welcome\n/help — this message';
 
 // Process one Telegram update. Never throws (webhook must always 200) and never
 // leaks the token.
@@ -298,10 +336,10 @@ async function processUpdate(update) {
     }
 
     try {
-      const result = await generateAmazonLink(url);
+      const result = await generateLink(url);
       const reply = formatAffiliateMessage(result);
       await sendMessage(token, chatId, reply);
-      await logAudit('bot', `@${fromName} generated affiliate link (${result.asin || 'page'}).`);
+      await logAudit('bot', `@${fromName} generated ${result.platform || 'affiliate'} link (${result.asin || 'page'}).`);
       // Also publish to channels that opted in to user-generated links.
       await publishAuto(reply);
     } catch (err) {
@@ -319,6 +357,8 @@ module.exports = {
   connectBot,
   confirmBot,
   removeBot,
+  silenceBot,
+  restoreBot,
   sendTest,
   addChannel,
   removeChannel,

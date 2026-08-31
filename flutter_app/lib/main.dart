@@ -56,8 +56,17 @@ class WebShellPage extends StatefulWidget {
 }
 
 class _WebShellPageState extends State<WebShellPage> {
-  // A single, persistent controller so the React app's sessionStorage token
-  // survives user <-> admin switching.
+  // A single, persistent controller so the React app's localStorage admin
+  // token survives user <-> admin switching AND full app restarts.
+  //
+  // Persistence notes (webview_flutter 4.x / webview_flutter_android):
+  //   * DOM storage / localStorage is enabled by default in
+  //     AndroidWebViewController (it calls setDomStorageEnabled(true) on
+  //     creation), and Android's WebView writes localStorage to disk under the
+  //     app's data dir, so the token survives the app being closed & reopened.
+  //   * Cookies are persisted automatically by Android's CookieManager.
+  //   * We deliberately never clear cache, cookies or web storage here — logout
+  //     is owned by the website's own "Log out" button (it clears localStorage).
   late final WebViewController _controller;
 
   bool _loading = true;
@@ -90,7 +99,9 @@ class _WebShellPageState extends State<WebShellPage> {
           onNavigationRequest: _handleNavigation,
         ),
       )
-      ..loadRequest(Uri.parse(kHomeUrl));
+      // Open the admin panel by default; a persisted localStorage token keeps
+      // the admin logged in across restarts.
+      ..loadRequest(Uri.parse(kAdminUrl));
   }
 
   // Keep DealVerse pages inside the WebView; send everything else (affiliate

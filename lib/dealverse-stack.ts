@@ -27,7 +27,12 @@ export class DealverseStack extends Stack {
       runtime: lambda.Runtime.NODEJS_24_X,
       handler: 'hello.handler',
       code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambda')),
-      timeout: Duration.seconds(30),
+      // 60s: Flipkart conversion DMs an external Telegram bot via MTProto and
+      // waits for its reply (a few seconds each). Async paths (the EventBridge
+      // automation tick) can use the full 60s; synchronous HTTP paths are still
+      // bounded by API Gateway's own ~29s integration timeout, so the bot
+      // round-trip on those is kept under that in code.
+      timeout: Duration.seconds(60),
       memorySize: 256,
       environment: {
         TABLE_NAME: configTable.tableName,

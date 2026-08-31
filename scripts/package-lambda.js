@@ -32,9 +32,13 @@ execSync('npm install --omit=dev --no-audit --no-fund', {
   stdio: 'inherit',
 });
 
-const nm = path.join(lambdaDir, 'node_modules', 'telegram');
-if (!fs.existsSync(nm)) {
-  console.error('ERROR: telegram was not installed into lambda/node_modules.');
-  process.exit(1);
+// Verify each bundled dependency actually landed in the asset. A missing dep
+// only surfaces at runtime in AWS as "Cannot find module '<x>'", so fail fast.
+const required = ['telegram'];
+for (const dep of required) {
+  if (!fs.existsSync(path.join(lambdaDir, 'node_modules', ...dep.split('/')))) {
+    console.error(`ERROR: ${dep} was not installed into lambda/node_modules.`);
+    process.exit(1);
+  }
 }
-console.log('Lambda dependencies installed (lambda/node_modules/telegram present).');
+console.log(`Lambda dependencies installed (${required.join(', ')} present).`);

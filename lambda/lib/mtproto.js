@@ -17,13 +17,17 @@
 // DynamoDB under the "mtproto" key and are NEVER returned to the client or
 // logged. Only maskStatus() output leaves this module.
 const { ApiError } = require('./errors');
-const { getConfig, setConfig } = require('./store');
-const { generateAmazonLink } = require('./affiliate');
-const { allAmazonLinks } = require('./listener');
+const { getConfig, setConfig, getTenant } = require('./store');
+const { generateLink, getActivePlatforms } = require('./affiliate');
+const { activeLinks } = require('./links');
 const { logAudit } = require('./audit');
 
 const MTPROTO_KEY = 'mtproto';
 const CONNECT_RETRIES = 3;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 // ── GramJS is loaded lazily so the rest of the app never depends on it. ──────
 function requireGram() {
@@ -278,14 +282,20 @@ async function listDialogs(limitRaw) {
       throw mapRpcError(err, 'Could not list your chats.');
     }
     return dialogs
-      .map((d) => ({
-        id: d && d.id !== undefined && d.id !== null ? String(d.id) : null,
-        title: (d && (d.title || d.name)) || '(untitled)',
-        username: (d && d.entity && d.entity.username) || null,
-        isChannel: !!(d && d.isChannel),
-        isGroup: !!(d && d.isGroup),
-        isUser: !!(d && d.isUser),
-      }))
+      .map((d) => {
+        const ent = (d && d.entity) || {};
+        // creator or having adminRights means this account can manage members.
+        const admin = !!(ent.creator || ent.adminRights);
+        return {
+          id: d && d.id !== undefined && d.id !== null ? String(d.id) : null,
+          title: (d && (d.title || d.name)) || '(untitled)',
+          username: ent.username || null,
+          isChannel: !!(d && d.isChannel),
+          isGroup: !!(d && d.isGroup),
+          isUser: !!(d && d.isUser),
+          admin,
+        };
+      })
       .filter((d) => !d.isUser); // groups + channels only
   } finally {
     await safeDisconnect(client);
@@ -306,8 +316,9 @@ function normalizePeer(input) {
   throw new ApiError(400, 'Enter a group/channel @username or numeric id.');
 }
 
-// Pull URLs out of a GramJS message: plain URLs in the text plus any hidden
-// URLs carried by text_url entities.
+// Pull URLs out of a GramJS message: plain URLs in the text, hidden URLs from
+// text_url entities, and any inline-keyboard button URLs (conversion bots often
+// return the affiliate link as a button).
 function extractLinks(msg) {
   const out = [];
   const text = (msg && msg.message) || '';
@@ -315,7 +326,66 @@ function extractLinks(msg) {
   for (const e of (msg && msg.entities) || []) {
     if (e && e.url) out.push(e.url);
   }
+  const rows = (msg && msg.replyMarkup && msg.replyMarkup.rows) || [];
+  for (const row of rows) {
+    for (const b of (row && row.buttons) || []) {
+      if (b && b.url) out.push(b.url);
+    }
+  }
   return out;
+}
+
+// Send a message to a bot (or any peer) as the logged-in USER and wait for the
+// reply. Used by Flipkart conversion (bots can't message bots). Returns
+// { text, links } gathered from the reply message(s). Requires an active session.
+async function sendToBot(peerRaw, messageText, opts = {}) {
+  const timeoutMs = clampInt(opts.timeoutMs, 3000, 60000, 18000);
+  const pollMs = clampInt(opts.pollMs, 500, 5000, 1500);
+  const cfg = await readCfg();
+  if (!cfg.session) {
+    throw new ApiError(400, 'Telegram login is required for Flipkart conversion. Log in under "Telegram login" first.');
+  }
+  const peer = normalizePeer(peerRaw);
+  const { client } = await connectClient(cfg, cfg.session);
+  try {
+    let entity;
+    try {
+      entity = await client.getEntity(peer);
+    } catch (err) {
+      throw mapRpcError(err, 'Could not find the conversion bot. Check its @username and that this account can message it.');
+    }
+
+    let sentId = 0;
+    try {
+      const sent = await client.sendMessage(entity, { message: String(messageText) });
+      sentId = sent && sent.id ? Number(sent.id) : 0;
+    } catch (err) {
+      throw mapRpcError(err, 'Could not message the conversion bot.');
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(pollMs);
+      let msgs;
+      try {
+        msgs = await client.getMessages(entity, { limit: 6 });
+      } catch (err) {
+        throw mapRpcError(err, 'Could not read the conversion bot reply.');
+      }
+      const replies = (msgs || [])
+        .filter((m) => m && !m.out && Number(m.id) > sentId && ((m.message && m.message.trim()) || (m.entities && m.entities.length) || (m.replyMarkup && m.replyMarkup.rows)))
+        .sort((a, b) => Number(a.id) - Number(b.id));
+      if (replies.length) {
+        const text = replies.map((r) => r.message || '').join('\n').trim();
+        const links = [];
+        for (const r of replies) for (const l of extractLinks(r)) links.push(l);
+        return { text, links };
+      }
+    }
+    throw new ApiError(504, 'The conversion bot did not reply in time. Try again.');
+  } finally {
+    await safeDisconnect(client);
+  }
 }
 
 // ── Read-only: last N messages from a source, with fresh affiliate links. ────
@@ -344,14 +414,15 @@ async function fetchEnriched(peerRaw, limitRaw) {
       throw mapRpcError(err, 'Could not read messages from that source.');
     }
 
+    const active = await getActivePlatforms();
     const out = [];
     for (const m of messages) {
       const text = (m && m.message) || '';
-      const links = allAmazonLinks(extractLinks(m));
+      const links = activeLinks(extractLinks(m), active);
       const items = [];
       for (const url of links) {
         try {
-          const r = await generateAmazonLink(url, { withMeta: false });
+          const r = await generateLink(url, { withMeta: false });
           items.push({
             sourceUrl: url,
             affiliate: { affiliateUrl: r.affiliateUrl, method: r.method, fallback: r.fallback, asin: r.asin },
@@ -383,11 +454,12 @@ async function fetchRaw(peerRaw, limitRaw) {
     const messages = await client.getMessages(entity, { limit }).catch((err) => {
       throw mapRpcError(err, 'Could not read messages from that source.');
     });
+    const active = await getActivePlatforms();
     return messages.map((m) => ({
       id: m && m.id !== undefined ? String(m.id) : '0',
       numId: m && Number.isFinite(Number(m.id)) ? Number(m.id) : 0,
       text: (m && m.message) || '',
-      links: allAmazonLinks(extractLinks(m)),
+      links: activeLinks(extractLinks(m), active),
     }));
   } finally {
     await safeDisconnect(client);
@@ -431,9 +503,411 @@ async function removeSource(peerRaw) {
   return cfg.sources.map((s) => ({ peer: s.peer, title: s.title }));
 }
 
+// ── Import users (BETA, ToS-risky) — two phases ───────────────────────────────
+// Telegram treats bulk-adding scraped members as spam: most adds fail with a
+// privacy error and the account gets flood-limited after only a few. So the
+// flow is split:
+//   1) FETCH — read members of a source group (relatively safe, read-only) and
+//      persist the minimal data needed to add them later (id + access_hash) to a
+//      single DynamoDB pool item.
+//   2) ADD  — later, add a small, capped, paced batch from the saved pool to a
+//      target channel, updating each candidate's status and logging per-user
+//      results to CloudWatch. Stops immediately on a flood limit.
+const IMPORT_POOL_KEY = 'import_pool'; // tenant-scoped candidate pool
+const IMPORT_PER_RUN_MAX = 15;
+const IMPORT_PER_DAY_MAX = 30;
+const IMPORT_MSG_PER_DAY_MAX = 20; // separate cap for direct messages
+const IMPORT_FETCH_MAX = 500; // members read per fetch call
+const IMPORT_POOL_CAP = 2000; // keep the DynamoDB item well under its size limit
+const IMPORT_PACE_MS = 3000; // gap between adds to reduce flood risk
+const IMPORT_BUDGET_MS = 45000; // stay well under the 60s Lambda timeout
+
+async function readPool() {
+  return (await getConfig(IMPORT_POOL_KEY)) || { users: [], source: null, target: null, fetchedAt: null };
+}
+
+function poolCounts(pool) {
+  const c = { total: 0, pending: 0, added: 0, privacy: 0, failed: 0 };
+  for (const u of (pool && pool.users) || []) {
+    c.total++;
+    if (c[u.status] !== undefined) c[u.status] += 1;
+  }
+  return c;
+}
+
+// Client-safe view. Includes the user id (needed to target a single add) but
+// NEVER the access_hash, which is the sensitive part that stays server-side.
+function maskPool(pool) {
+  const users = ((pool && pool.users) || []).slice(0, 500).map((u) => ({
+    id: String(u.id),
+    username: u.username || null,
+    firstName: u.firstName || null,
+    status: u.status,
+    lastError: u.lastError || null,
+    at: u.at || null,
+    messagedAt: u.messagedAt || null,
+    messageError: u.messageError || null,
+  }));
+  return {
+    source: (pool && pool.source) || null,
+    target: (pool && pool.target) || null,
+    fetchedAt: (pool && pool.fetchedAt) || null,
+    message: (pool && pool.message) || '',
+    counts: poolCounts(pool),
+    users,
+  };
+}
+
+async function importStatus() {
+  return maskPool(await readPool());
+}
+
+async function importClear() {
+  await setConfig(IMPORT_POOL_KEY, { users: [], source: null, target: null, fetchedAt: null });
+  await logAudit('mtproto', 'Cleared the import pool.');
+  return maskPool(await readPool());
+}
+
+// Phase 1: read members from a source group into the pool (dedup by id).
+async function importFetch(sourceRaw, limitRaw) {
+  const cfg = await readCfg();
+  if (!cfg.session) throw new ApiError(400, 'Log in with a Telegram account first.');
+  const limit = clampInt(limitRaw, 1, IMPORT_FETCH_MAX, 100);
+  const pool = await readPool();
+  const byId = new Map((pool.users || []).map((u) => [String(u.id), u]));
+
+  const { client } = await connectClient(cfg, cfg.session);
+  try {
+    let source;
+    try {
+      source = await client.getEntity(normalizePeer(sourceRaw));
+    } catch (err) {
+      throw mapRpcError(err, 'Could not resolve the source group. Make sure this account is a member.');
+    }
+    let participants;
+    try {
+      participants = await client.getParticipants(source, { limit });
+    } catch (err) {
+      throw mapRpcError(err, 'Could not read the source members (it may hide its member list, or this account lacks access).');
+    }
+
+    let added = 0;
+    let skippedNoHash = 0;
+    for (const u of participants || []) {
+      if (!u || u.bot || u.self || u.deleted) continue;
+      if (!u.accessHash) { skippedNoHash++; continue; } // cannot be added later without it
+      const id = String(u.id);
+      if (byId.has(id)) continue;
+      if (byId.size >= IMPORT_POOL_CAP) break;
+      byId.set(id, {
+        id,
+        accessHash: String(u.accessHash),
+        username: u.username || null,
+        firstName: u.firstName || null,
+        status: 'pending',
+        attempts: 0,
+        lastError: null,
+        at: null,
+      });
+      added++;
+    }
+
+    pool.users = Array.from(byId.values());
+    pool.source = String(sourceRaw).trim();
+    pool.fetchedAt = new Date().toISOString();
+    await setConfig(IMPORT_POOL_KEY, pool);
+    console.log('import.fetch', JSON.stringify({
+      tenant: getTenant(), source: pool.source, read: (participants || []).length,
+      newPending: added, skippedNoHash, poolTotal: pool.users.length,
+    }));
+    await logAudit('mtproto', `Fetched members from ${pool.source}: +${added} new (pool ${pool.users.length}).`);
+    return maskPool(pool);
+  } finally {
+    await safeDisconnect(client);
+  }
+}
+
+// Phase 2: add a capped, paced batch of pending pool members to a target channel.
+async function importAdd(targetRaw, countRaw) {
+  const cfg = await readCfg();
+  if (!cfg.session) throw new ApiError(400, 'Log in with a Telegram account first.');
+  const requested = clampInt(countRaw, 1, IMPORT_PER_RUN_MAX, 5);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const dlog = cfg.importLog && cfg.importLog.date === today ? cfg.importLog : { date: today, added: 0 };
+  if (dlog.added >= IMPORT_PER_DAY_MAX) {
+    throw new ApiError(429, `Daily add limit reached (${IMPORT_PER_DAY_MAX}). Try again tomorrow.`);
+  }
+  const room = Math.min(requested, IMPORT_PER_DAY_MAX - dlog.added);
+
+  const pool = await readPool();
+  const pending = (pool.users || []).filter((u) => u.status === 'pending');
+  if (!pending.length) throw new ApiError(400, 'No pending members in the pool. Fetch members first.');
+
+  // eslint-disable-next-line global-require
+  const bigInt = require('big-integer');
+  const { client, Api } = await connectClient(cfg, cfg.session);
+  try {
+    let target;
+    try {
+      target = await client.getEntity(normalizePeer(targetRaw));
+    } catch (err) {
+      throw mapRpcError(err, 'Could not resolve your target channel. Make sure this account is an admin there.');
+    }
+
+    let added = 0;
+    let privacy = 0;
+    let failed = 0;
+    let flooded = false;
+    const deadline = Date.now() + IMPORT_BUDGET_MS;
+
+    for (const u of pending) {
+      if (added >= room || Date.now() > deadline) break;
+      u.attempts = (u.attempts || 0) + 1;
+      try {
+        const inputUser = new Api.InputUser({ userId: bigInt(u.id), accessHash: bigInt(u.accessHash) });
+        await client.invoke(new Api.channels.InviteToChannel({ channel: target, users: [inputUser] }));
+        u.status = 'added';
+        u.at = new Date().toISOString();
+        u.lastError = null;
+        added++;
+        console.log('import.add ok', JSON.stringify({ tenant: getTenant(), user: u.username || u.id }));
+        await sleep(IMPORT_PACE_MS);
+      } catch (err) {
+        const raw = rpcMessage(err);
+        const m = raw.toUpperCase();
+        if (m.includes('ALREADY_PARTICIPANT')) {
+          u.status = 'added';
+          u.at = new Date().toISOString();
+          u.lastError = null;
+          console.log('import.add already', JSON.stringify({ tenant: getTenant(), user: u.username || u.id }));
+        } else if (m.includes('USER_PRIVACY') || m.includes('NOT_MUTUAL') || m.includes('USER_CHANNELS_TOO_MUCH') || m.includes('USER_BOT') || m.includes('USER_KICKED')) {
+          u.status = 'privacy';
+          u.lastError = raw;
+          privacy++;
+          console.warn('import.add skip', JSON.stringify({ tenant: getTenant(), user: u.username || u.id, reason: raw }));
+        } else if (m.includes('PEER_FLOOD') || m.includes('FLOOD_WAIT')) {
+          flooded = true;
+          u.lastError = floodMessage(err);
+          console.error('import.add FLOOD', JSON.stringify({ tenant: getTenant(), user: u.username || u.id, reason: u.lastError }));
+          break; // stop immediately to protect the account
+        } else {
+          u.status = 'failed';
+          u.lastError = raw;
+          failed++;
+          console.error('import.add fail', JSON.stringify({ tenant: getTenant(), user: u.username || u.id, reason: raw }));
+        }
+      }
+    }
+
+    dlog.added += added;
+    cfg.importLog = dlog;
+    await setConfig(MTPROTO_KEY, cfg);
+    pool.target = String(targetRaw).trim();
+    await setConfig(IMPORT_POOL_KEY, pool);
+    await logAudit('mtproto', `Import add → ${pool.target}: +${added} (privacy ${privacy}, failed ${failed}${flooded ? ', flood-stopped' : ''}).`);
+    return { added, privacy, failed, flooded, dailyAdded: dlog.added, dailyMax: IMPORT_PER_DAY_MAX, counts: poolCounts(pool) };
+  } finally {
+    await safeDisconnect(client);
+  }
+}
+
+// Add ONE specific pool member (by user id) to a target channel — used by the
+// manual, click-each-row flow. Returns the outcome + the refreshed pool.
+async function importAddOne(targetRaw, userIdRaw) {
+  const cfg = await readCfg();
+  if (!cfg.session) throw new ApiError(400, 'Log in with a Telegram account first.');
+  const userId = String(userIdRaw || '').trim();
+  if (!userId) throw new ApiError(400, 'Missing member.');
+
+  const pool = await readPool();
+  const u = (pool.users || []).find((x) => String(x.id) === userId);
+  if (!u) throw new ApiError(404, 'That member is not in the pool.');
+  if (u.status === 'added') return { status: 'added', already: true, pool: maskPool(pool) };
+
+  const today = new Date().toISOString().slice(0, 10);
+  const dlog = cfg.importLog && cfg.importLog.date === today ? cfg.importLog : { date: today, added: 0 };
+  if (dlog.added >= IMPORT_PER_DAY_MAX) {
+    throw new ApiError(429, `Daily add limit reached (${IMPORT_PER_DAY_MAX}). Try again tomorrow.`);
+  }
+
+  // eslint-disable-next-line global-require
+  const bigInt = require('big-integer');
+  const { client, Api } = await connectClient(cfg, cfg.session);
+  try {
+    let target;
+    try {
+      target = await client.getEntity(normalizePeer(targetRaw));
+    } catch (err) {
+      throw mapRpcError(err, 'Could not resolve your target channel. Make sure this account is an admin there.');
+    }
+
+    u.attempts = (u.attempts || 0) + 1;
+    let outcome;
+    try {
+      const inputUser = new Api.InputUser({ userId: bigInt(u.id), accessHash: bigInt(u.accessHash) });
+      await client.invoke(new Api.channels.InviteToChannel({ channel: target, users: [inputUser] }));
+      u.status = 'added';
+      u.at = new Date().toISOString();
+      u.lastError = null;
+      dlog.added += 1;
+      cfg.importLog = dlog;
+      await setConfig(MTPROTO_KEY, cfg);
+      outcome = { status: 'added' };
+      console.log('import.addone ok', JSON.stringify({ tenant: getTenant(), user: u.username || u.id }));
+    } catch (err) {
+      const raw = rpcMessage(err);
+      const m = raw.toUpperCase();
+      if (m.includes('ALREADY_PARTICIPANT')) {
+        u.status = 'added';
+        u.at = new Date().toISOString();
+        u.lastError = null;
+        outcome = { status: 'added', already: true };
+      } else if (m.includes('USER_PRIVACY') || m.includes('NOT_MUTUAL') || m.includes('USER_CHANNELS_TOO_MUCH') || m.includes('USER_BOT') || m.includes('USER_KICKED')) {
+        u.status = 'privacy';
+        u.lastError = raw;
+        outcome = { status: 'privacy', error: raw };
+        console.warn('import.addone skip', JSON.stringify({ tenant: getTenant(), user: u.username || u.id, reason: raw }));
+      } else if (m.includes('PEER_FLOOD') || m.includes('FLOOD_WAIT')) {
+        u.lastError = floodMessage(err); // leave status pending so it can be retried after the wait
+        outcome = { status: 'flood', error: u.lastError };
+        console.error('import.addone FLOOD', JSON.stringify({ tenant: getTenant(), user: u.username || u.id, reason: u.lastError }));
+      } else {
+        u.status = 'failed';
+        u.lastError = raw;
+        outcome = { status: 'failed', error: raw };
+        console.error('import.addone fail', JSON.stringify({ tenant: getTenant(), user: u.username || u.id, reason: raw }));
+      }
+    }
+
+    pool.target = String(targetRaw).trim();
+    await setConfig(IMPORT_POOL_KEY, pool);
+    await logAudit('mtproto', `Import add-one → ${pool.target}: ${u.username || u.id} = ${outcome.status}.`);
+    return { ...outcome, dailyAdded: dlog.added, dailyMax: IMPORT_PER_DAY_MAX, pool: maskPool(pool) };
+  } finally {
+    await safeDisconnect(client);
+  }
+}
+
+// Save the invite/DM message template (stored on the pool item).
+async function importSaveMessage(text) {
+  const pool = await readPool();
+  pool.message = String(text || '').slice(0, 4000);
+  await setConfig(IMPORT_POOL_KEY, pool);
+  return maskPool(pool);
+}
+
+// Send the invite message as a DM to ONE pool member. Cold-DMing strangers is
+// spammy too, so it shares the flood handling and has its own daily cap.
+async function importSendOne(userIdRaw, messageOverride) {
+  const cfg = await readCfg();
+  if (!cfg.session) throw new ApiError(400, 'Log in with a Telegram account first.');
+  const userId = String(userIdRaw || '').trim();
+  if (!userId) throw new ApiError(400, 'Missing member.');
+
+  const pool = await readPool();
+  const u = (pool.users || []).find((x) => String(x.id) === userId);
+  if (!u) throw new ApiError(404, 'That member is not in the pool.');
+  const text = (messageOverride && String(messageOverride).trim()) || pool.message || '';
+  if (!text) throw new ApiError(400, 'Write the invite message first.');
+
+  const today = new Date().toISOString().slice(0, 10);
+  const mlog = cfg.msgLog && cfg.msgLog.date === today ? cfg.msgLog : { date: today, sent: 0 };
+  if (mlog.sent >= IMPORT_MSG_PER_DAY_MAX) {
+    throw new ApiError(429, `Daily message limit reached (${IMPORT_MSG_PER_DAY_MAX}). Try again tomorrow.`);
+  }
+
+  // eslint-disable-next-line global-require
+  const bigInt = require('big-integer');
+  const { client, Api } = await connectClient(cfg, cfg.session);
+  try {
+    const peer = new Api.InputPeerUser({ userId: bigInt(u.id), accessHash: bigInt(u.accessHash) });
+    let outcome;
+    try {
+      await client.sendMessage(peer, { message: text });
+      u.messagedAt = new Date().toISOString();
+      u.messageError = null;
+      mlog.sent += 1;
+      cfg.msgLog = mlog;
+      await setConfig(MTPROTO_KEY, cfg);
+      outcome = { status: 'sent' };
+      console.log('import.msg ok', JSON.stringify({ tenant: getTenant(), user: u.username || u.id }));
+    } catch (err) {
+      const raw = rpcMessage(err);
+      const m = raw.toUpperCase();
+      const isFlood = m.includes('PEER_FLOOD') || m.includes('FLOOD_WAIT');
+      u.messageError = isFlood ? floodMessage(err) : raw;
+      outcome = { status: isFlood ? 'flood' : 'failed', error: u.messageError };
+      console.error('import.msg fail', JSON.stringify({ tenant: getTenant(), user: u.username || u.id, reason: u.messageError }));
+    }
+    await setConfig(IMPORT_POOL_KEY, pool);
+    await logAudit('mtproto', `Import DM → ${u.username || u.id} = ${outcome.status}.`);
+    return { ...outcome, dailySent: mlog.sent, dailyMax: IMPORT_MSG_PER_DAY_MAX, pool: maskPool(pool) };
+  } finally {
+    await safeDisconnect(client);
+  }
+}
+
+// Remove pool members who are ALREADY in the target channel (so they don't show
+// as addable). Reads the target's participants (this account must be admin).
+async function importSyncTarget(targetRaw) {
+  const cfg = await readCfg();
+  if (!cfg.session) throw new ApiError(400, 'Log in with a Telegram account first.');
+  const pool = await readPool();
+  const { client } = await connectClient(cfg, cfg.session);
+  try {
+    let target;
+    try {
+      target = await client.getEntity(normalizePeer(targetRaw));
+    } catch (err) {
+      throw mapRpcError(err, 'Could not resolve your target channel. Make sure this account is an admin there.');
+    }
+    let members;
+    try {
+      members = await client.getParticipants(target, { limit: 2000 });
+    } catch (err) {
+      throw mapRpcError(err, 'Could not read the target channel members (this account must be an admin there).');
+    }
+    const inTarget = new Set((members || []).map((u) => String(u.id)));
+    const before = (pool.users || []).length;
+    pool.users = (pool.users || []).filter((u) => !inTarget.has(String(u.id)));
+    const removed = before - pool.users.length;
+    pool.target = String(targetRaw).trim();
+    await setConfig(IMPORT_POOL_KEY, pool);
+    console.log('import.sync', JSON.stringify({ tenant: getTenant(), target: pool.target, targetMembers: inTarget.size, removed, poolTotal: pool.users.length }));
+    await logAudit('mtproto', `Synced pool with ${pool.target}: removed ${removed} already-member(s).`);
+    return { removed, pool: maskPool(pool) };
+  } finally {
+    await safeDisconnect(client);
+  }
+}
+
 // ── Error helpers ─────────────────────────────────────────────────────────────
 function rpcMessage(err) {
   return String((err && (err.errorMessage || err.message)) || '');
+}
+
+// Build a rich, human-readable flood message. FLOOD_WAIT_x carries an exact
+// seconds count; PEER_FLOOD does NOT (Telegram gives no duration for it).
+function floodMessage(err) {
+  const raw = rpcMessage(err);
+  const code = err && err.code ? ` (code ${err.code})` : '';
+  let secs = err && Number.isFinite(Number(err.seconds)) ? Number(err.seconds) : null;
+  const mm = raw.match(/FLOOD_WAIT_(\d+)/i);
+  if (secs == null && mm) secs = Number(mm[1]);
+  if (secs != null) {
+    const mins = Math.ceil(secs / 60);
+    return `FLOOD_WAIT${code}: Telegram says wait ${secs}s (~${mins} min) before trying again. [raw: ${raw}]`;
+  }
+  if (/PEER_FLOOD/i.test(raw)) {
+    return (
+      `PEER_FLOOD${code}: Telegram has temporarily restricted this account from adding members. ` +
+      `This error carries NO wait time from Telegram — there is no exact duration in the API. ` +
+      `To check how long / when it lifts, message @SpamBot in Telegram from this account (it reports your ` +
+      `limitation status and lets you appeal). Stop adding until then — retrying extends the restriction. [raw: ${raw}]`
+    );
+  }
+  return raw;
 }
 
 // Translate common Telegram RPC errors into friendly, non-leaking messages.
@@ -474,6 +948,15 @@ module.exports = {
   listDialogs,
   fetchEnriched,
   fetchRaw,
+  sendToBot,
+  importFetch,
+  importAdd,
+  importAddOne,
+  importSaveMessage,
+  importSendOne,
+  importSyncTarget,
+  importStatus,
+  importClear,
   getSources,
   addSource,
   removeSource,

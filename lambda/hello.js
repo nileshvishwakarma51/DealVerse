@@ -3,22 +3,29 @@
 const fs = require('fs');
 const path = require('path');
 const { ApiError } = require('./lib/errors');
-const { getConfig, setConfig } = require('./lib/store');
-const { isValidSecret, expectedToken, checkBearer } = require('./lib/auth');
+const { getConfig, setConfig, deleteConfig, setTenant, getTenant, DEFAULT_TENANT } = require('./lib/store');
+const auth = require('./lib/auth');
+const { checkBearer } = auth;
+const merchants = require('./lib/merchants');
 const { parseCurl, validateParsedCurl } = require('./lib/curl');
 const { verifyAffiliate } = require('./lib/amazon');
 const {
   generateAmazonLink,
+  generateLink,
+  getActivePlatforms,
   testSiteStripe,
   SITESTRIPE_KEY,
   AMAZON_KEY,
   DEFAULT_AMAZON,
 } = require('./lib/affiliate');
+const flipkart = require('./lib/flipkart');
 const {
   TELEGRAM_KEY,
   connectBot,
   confirmBot,
   removeBot,
+  silenceBot,
+  restoreBot,
   sendTest,
   addChannel,
   removeChannel,
@@ -31,7 +38,7 @@ const {
   maskTelegram,
   formatAffiliateMessage,
 } = require('./lib/telegram');
-const { logAudit, listAudit } = require('./lib/audit');
+const { logAudit, listAudit, purgeTenant } = require('./lib/audit');
 const {
   getBroadcasts,
   saveBroadcast,
@@ -180,14 +187,34 @@ function selfBaseUrl(event) {
 }
 
 exports.handler = async (event) => {
-  // EventBridge scheduled tick (no HTTP context) → run listener automation and
-  // evaluate scheduled custom messages.
+  await auth.ensureSecret();
+
+  // EventBridge scheduled tick (no HTTP context) → run automation for EVERY
+  // active merchant, each fully isolated (its own tenant, config, lock).
   if (!event.httpMethod && !event.requestContext) {
+    const summary = [];
+    // Shared deadline across ALL tenants so the whole tick stays under the 60s
+    // Lambda timeout (Flipkart conversions can each wait seconds on a bot).
+    const cronDeadline = Date.now() + 52 * 1000;
     try {
-      const auto = await runAutomation('schedule');
-      const bc = await runBroadcasts();
-      return { auto, broadcasts: bc };
+      const list = await merchants.getMerchants();
+      for (const m of list) {
+        if (m.active === false) continue;
+        if (Date.now() > cronDeadline) { summary.push({ tenant: m.id, skipped: 'cron-budget' }); continue; }
+        setTenant(m.id);
+        try {
+          const auto = await runAutomation('schedule', cronDeadline);
+          const bc = await runBroadcasts();
+          summary.push({ tenant: m.id, auto, broadcasts: bc });
+        } catch (err) {
+          console.error('cron tenant error', m.id, err && err.stack ? err.stack : err);
+          summary.push({ tenant: m.id, error: err.message });
+        }
+      }
+      console.log('cron done', JSON.stringify(summary));
+      return { ok: true, tenants: summary };
     } catch (err) {
+      console.error('cron fatal', err && err.stack ? err.stack : err);
       return { error: err.message };
     }
   }
@@ -196,15 +223,85 @@ exports.handler = async (event) => {
   const reqPath = (event.path || '/').replace(/\/+$/, '') || '/';
 
   if (method === 'OPTIONS') return respond(200, {});
+  console.log('req', method, reqPath);
 
   try {
-    // ── Admin: login ──────────────────────────────────────────────────────
-    if (method === 'POST' && reqPath.endsWith('/api/admin/login')) {
-      const { secret } = parseBody(event);
-      if (!isValidSecret(secret)) {
-        return respond(401, { success: false, error: 'Incorrect password.' });
+    // ── Auth gate (runs once; sets the tenant for admin routes) ─────────────
+    const isAdmin = reqPath.includes('/api/admin/') && !reqPath.endsWith('/api/admin/login');
+    const isSuper = reqPath.includes('/api/super/') && !reqPath.endsWith('/api/super/login');
+    if (isAdmin) {
+      const a = await auth.authMerchant(event);
+      if (!a.ok) {
+        return respond(a.inactive ? 403 : 401, {
+          success: false,
+          error: a.inactive ? 'Account deactivated. Contact the administrator.' : 'Unauthorized.',
+        });
       }
-      return respond(200, { success: true, token: expectedToken() });
+    } else if (isSuper) {
+      if (!auth.authSuper(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+    } else if (!reqPath.startsWith('/telegram/webhook')) {
+      // Public routes (/home generator, static) operate as the default merchant.
+      setTenant(DEFAULT_TENANT);
+    }
+
+    // ── Super-admin: login ────────────────────────────────────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/super/login')) {
+      const { secret } = parseBody(event);
+      if (!auth.verifySuper(secret)) return respond(401, { success: false, error: 'Incorrect password.' });
+      return respond(200, { success: true, token: auth.signToken({ s: true }) });
+    }
+
+    // ── Super-admin: list / add / (de)activate / delete merchants ─────────
+    if (method === 'GET' && reqPath.endsWith('/api/super/merchants')) {
+      return respond(200, { success: true, merchants: await merchants.listMerchants() });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/super/merchants/add')) {
+      const { name, password } = parseBody(event);
+      const m = await merchants.addMerchant(name, password);
+      return respond(200, { success: true, merchant: m, merchants: await merchants.listMerchants() });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/super/merchants/deactivate')) {
+      const { id } = parseBody(event);
+      await merchants.setActive(id, false);
+      // Silence their bot without forgetting it (webhook off, token kept).
+      setTenant(id);
+      try { await silenceBot(); } catch { /* ignore */ }
+      return respond(200, { success: true, merchants: await merchants.listMerchants() });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/super/merchants/activate')) {
+      const { id } = parseBody(event);
+      const m = await merchants.setActive(id, true);
+      // Re-register the stored bot's webhook (best-effort) for that tenant.
+      setTenant(id);
+      const base = selfBaseUrl(event).replace(/\/+$/, '');
+      const suffix = id === DEFAULT_TENANT ? '' : `/${id}`;
+      try { await restoreBot(`${base}/telegram/webhook${suffix}`); } catch { /* ignore */ }
+      return respond(200, { success: true, merchant: m, merchants: await merchants.listMerchants() });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/super/merchants/delete')) {
+      const { id } = parseBody(event);
+      if (id === DEFAULT_TENANT) {
+        return respond(400, { success: false, error: 'The default merchant cannot be deleted.' });
+      }
+      setTenant(id);
+      // Best-effort external cleanup before wiping data.
+      try { await removeBot(); } catch { /* ignore */ }
+      try { await mtproto.clearCredentials(); } catch { /* ignore */ }
+      for (const key of ['amazon', 'sitestripe', 'flipkart', 'telegram', 'listeners', 'automation', 'broadcasts', 'mtproto', 'import_pool']) {
+        try { await deleteConfig(key); } catch { /* ignore */ }
+      }
+      await purgeTenant(id);
+      const remaining = await merchants.removeMerchant(id);
+      return respond(200, { success: true, merchants: remaining });
+    }
+
+    // ── Merchant: login (name + password) ─────────────────────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/login')) {
+      const { name, password, secret } = parseBody(event);
+      const result = await merchants.verifyLogin(name, password || secret);
+      if (!result) return respond(401, { success: false, error: 'Incorrect name or password.' });
+      if (!result.active) return respond(403, { success: false, error: 'Account deactivated. Contact the administrator.' });
+      return respond(200, { success: true, token: auth.signToken({ t: result.id }) });
     }
 
     // ── Admin: read current config (mode/tag + session status) (protected) ─
@@ -214,7 +311,8 @@ exports.handler = async (event) => {
       const sitestripe = await getConfig(SITESTRIPE_KEY);
       return respond(200, {
         success: true,
-        amazon: { mode: amazon.mode, tag: amazon.tag || '' },
+        amazon: { mode: amazon.mode, tag: amazon.tag || '', active: amazon.active !== false },
+        flipkart: flipkart.maskFlipkart(await flipkart.getFlipkart()),
         sitestripe: maskSiteStripe(sitestripe),
       });
     }
@@ -222,7 +320,7 @@ exports.handler = async (event) => {
     // ── Admin: save Amazon mode + tag (protected) ─────────────────────────
     if (method === 'POST' && reqPath.endsWith('/api/admin/amazon')) {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
-      const { mode, tag } = parseBody(event);
+      const { mode, tag, active } = parseBody(event);
       if (mode !== 'TAG' && mode !== 'SITE_STRIPE') {
         return respond(400, { success: false, error: 'mode must be "TAG" or "SITE_STRIPE".' });
       }
@@ -230,9 +328,42 @@ exports.handler = async (event) => {
       if (mode === 'TAG' && cleanTag === '') {
         return respond(400, { success: false, error: 'An affiliate tag is required for TAG mode.' });
       }
-      const value = { mode, tag: cleanTag };
+      const existing = (await getConfig(AMAZON_KEY)) || {};
+      const value = {
+        mode,
+        tag: cleanTag,
+        active: typeof active === 'boolean' ? active : existing.active !== false,
+      };
       await setConfig(AMAZON_KEY, value);
       return respond(200, { success: true, amazon: value });
+    }
+
+    // ── Admin: toggle Amazon active on/off (protected) ────────────────────
+    if (method === 'POST' && reqPath.endsWith('/api/admin/amazon/active')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { active } = parseBody(event);
+      const existing = (await getConfig(AMAZON_KEY)) || DEFAULT_AMAZON;
+      const value = { ...existing, active: !!active };
+      await setConfig(AMAZON_KEY, value);
+      return respond(200, { success: true, amazon: { mode: value.mode, tag: value.tag || '', active: value.active } });
+    }
+
+    // ── Admin: Flipkart config (read / save / test) (protected) ───────────
+    if (method === 'GET' && reqPath.endsWith('/api/admin/flipkart')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      return respond(200, { success: true, flipkart: flipkart.maskFlipkart(await flipkart.getFlipkart()) });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/flipkart/test')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { url } = parseBody(event);
+      const result = await flipkart.testConversion(url);
+      return respond(200, { success: true, result });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/flipkart')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { active, botUsername } = parseBody(event);
+      const saved = await flipkart.saveFlipkart({ active, botUsername });
+      return respond(200, { success: true, flipkart: saved });
     }
 
     // ── Admin: read current SiteStripe status (protected) ─────────────────
@@ -277,7 +408,11 @@ exports.handler = async (event) => {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
       const { token, baseUrl } = parseBody(event);
       const base = (typeof baseUrl === 'string' && baseUrl.trim()) || selfBaseUrl(event);
-      const webhookUrl = `${base.replace(/\/+$/, '')}/telegram/webhook`;
+      // Per-tenant webhook path (default merchant keeps the bare path so its
+      // already-registered webhook is unaffected).
+      const tid = getTenant();
+      const suffix = tid === DEFAULT_TENANT ? '' : `/${tid}`;
+      const webhookUrl = `${base.replace(/\/+$/, '')}/telegram/webhook${suffix}`;
       const cfg = await connectBot(token, webhookUrl);
       return respond(200, { success: true, telegram: maskTelegram(cfg) });
     }
@@ -564,8 +699,59 @@ exports.handler = async (event) => {
       return respond(200, { success: true, peer: String(peer), messages });
     }
 
+    // ── Import users (beta): two phases — fetch to a saved pool, then add a
+    // capped/paced batch from the pool to an owned target channel (protected).
+    if (method === 'GET' && reqPath.endsWith('/api/admin/mtproto/import/status')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      return respond(200, { success: true, pool: await mtproto.importStatus() });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/import/fetch')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { source, limit } = parseBody(event);
+      const pool = await mtproto.importFetch(source, limit);
+      return respond(200, { success: true, pool });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/import/add')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { target, count } = parseBody(event);
+      const result = await mtproto.importAdd(target, count);
+      return respond(200, { success: true, result });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/import/add-one')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { target, userId } = parseBody(event);
+      const result = await mtproto.importAddOne(target, userId);
+      return respond(200, { success: true, result });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/import/message')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { message } = parseBody(event);
+      const pool = await mtproto.importSaveMessage(message);
+      return respond(200, { success: true, pool });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/import/send-one')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { userId, message } = parseBody(event);
+      const result = await mtproto.importSendOne(userId, message);
+      return respond(200, { success: true, result });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/import/sync-target')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { target } = parseBody(event);
+      const result = await mtproto.importSyncTarget(target);
+      return respond(200, { success: true, result });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/import/clear')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const pool = await mtproto.importClear();
+      return respond(200, { success: true, pool });
+    }
+
     // ── Telegram webhook (public; verified by secret header) ──────────────
-    if (method === 'POST' && reqPath.endsWith('/telegram/webhook')) {
+    // Path is /telegram/webhook (default merchant) or /telegram/webhook/<tid>.
+    if (method === 'POST' && reqPath.includes('/telegram/webhook')) {
+      const m = reqPath.match(/\/telegram\/webhook(?:\/([^/]+))?$/);
+      if (m) setTenant(m[1] || DEFAULT_TENANT);
       const cfg = await getConfig(TELEGRAM_KEY);
       const secretHeader = lowerHeaders(event)['x-telegram-bot-api-secret-token'] || '';
       if (cfg && cfg.webhookSecret && secretHeader === cfg.webhookSecret) {
@@ -584,10 +770,10 @@ exports.handler = async (event) => {
     if (method === 'POST' && reqPath.endsWith('/api/affiliate/generate-link')) {
       const { url } = parseBody(event);
       if (typeof url !== 'string' || url.trim() === '') {
-        return respond(400, { success: false, error: 'Paste an Amazon product link.' });
+        return respond(400, { success: false, error: 'Paste an Amazon or Flipkart product link.' });
       }
-      const result = await generateAmazonLink(url.trim());
-      await logAudit('website', `Website generated affiliate link (${result.asin || 'page'}).`);
+      const result = await generateLink(url.trim());
+      await logAudit('website', `Website generated ${result.platform || 'affiliate'} link (${result.asin || 'page'}).`);
       // Publish to channels that opted in to user/website-generated links.
       try {
         await publishAuto(formatAffiliateMessage(result));
@@ -647,6 +833,13 @@ exports.handler = async (event) => {
     return respond(404, { success: false, error: 'Not found.' });
   } catch (err) {
     const status = err instanceof ApiError ? err.status : 500;
+    // Log full stack for unexpected (5xx) errors so CloudWatch is useful for
+    // debugging; expected 4xx (ApiError) are logged as one concise line.
+    if (status >= 500) {
+      console.error('handler error', method, reqPath, 'tenant=' + getTenant(), err && err.stack ? err.stack : err);
+    } else {
+      console.warn('handler 4xx', method, reqPath, status, err.message);
+    }
     return respond(status, { success: false, error: err.message || 'Internal error.' });
   }
 };

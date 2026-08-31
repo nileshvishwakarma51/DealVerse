@@ -2,7 +2,7 @@
   "name": "dealverse-lambda",
   "version": "0.1.0",
   "private": true,
-  "description": "DealVerse Lambda runtime dependencies. The @aws-sdk/* packages are provided by the Node.js Lambda runtime and are intentionally NOT listed here. Only the MTProto (beta) feature needs a bundled dependency: GramJS (telegram).",
+  "description": "DealVerse Lambda runtime dependencies. Most @aws-sdk/* packages are provided by the Node.js Lambda runtime and are intentionally NOT listed here. Only GramJS (telegram) for the MTProto beta must be bundled.",
   "dependencies": {
     "telegram": "2.26.22"
   }
