@@ -1829,6 +1829,7 @@ Channel se buy karo ya @DealVerse_Auto_bot se apna product link banao.
 function ImportUsers({ authFetch, onNavigate }) {
   // daily auto-add
   const [auto, setAuto] = useState(null);
+  const [timesText, setTimesText] = useState('08:00, 20:00');
   const [savingAuto, setSavingAuto] = useState(false);
   const [autoMsg, setAutoMsg] = useState(null);
   const [loggedIn, setLoggedIn] = useState(null);
@@ -1872,7 +1873,10 @@ function ImportUsers({ authFetch, onNavigate }) {
         try {
           const ares = await authFetch('api/admin/mtproto/import/auto');
           const adata = await ares.json();
-          if (adata.auto) setAuto({ ...adata.auto, welcome: adata.auto.welcome || WELCOME_DEFAULT });
+          if (adata.auto) {
+            setAuto({ ...adata.auto, welcome: adata.auto.welcome || WELCOME_DEFAULT });
+            if (adata.auto.times && adata.auto.times.length) setTimesText(adata.auto.times.join(', '));
+          }
         } catch { /* ignore */ }
       }
     } catch { setLoggedIn(false); }
@@ -1885,11 +1889,12 @@ function ImportUsers({ authFetch, onNavigate }) {
       const body = { ...auto, ...patch };
       const res = await authFetch('api/admin/mtproto/import/auto', {
         method: 'POST',
-        body: JSON.stringify({ enabled: body.enabled, time: body.time, count: Number(body.count), target: body.target, welcome: body.welcome }),
+        body: JSON.stringify({ enabled: body.enabled, times: timesText, count: Number(body.count), target: body.target, welcome: body.welcome }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Save failed.');
       setAuto({ ...data.auto, welcome: data.auto.welcome || WELCOME_DEFAULT });
+      if (data.auto.times && data.auto.times.length) setTimesText(data.auto.times.join(', '));
       setAutoMsg({ type: 'ok', text: 'Saved.' });
     } catch (e) {
       setAutoMsg({ type: 'err', text: e.message });
@@ -2109,23 +2114,24 @@ function ImportUsers({ authFetch, onNavigate }) {
 
       {/* Step 3 — daily automation */}
       {auto && (
-        <Collapsible title={`Automation · daily auto-add${auto.enabled ? ' (on)' : ' (off)'}`} bare>
+        <Collapsible title={`Automation · scheduled auto-add${auto.enabled ? ' (on)' : ' (off)'}`} bare>
           <p className="subtitle">
-            Once a day at your set time, automatically add up to {auto.count || 5} pending members to a channel, remove them
-            from the pool, and post your welcome message there. Kept small ({'≤'}5/day) to stay under Telegram's flood limit.
+            At each scheduled time, automatically add up to {auto.count || 5} pending members to a channel, remove them from
+            the pool, and post your welcome message there. Each run is kept small ({'≤'}5) to stay under Telegram's flood limit.
           </p>
 
           <div className="row" style={{ margin: '4px 0 14px' }}>
-            <Toggle checked={auto.enabled} onChange={(v) => saveAuto({ enabled: v })} label="Enable daily auto-add" />
+            <Toggle checked={auto.enabled} onChange={(v) => saveAuto({ enabled: v })} label="Enable scheduled auto-add" />
           </div>
 
           <div className="auto-grid">
             <div>
-              <label htmlFor="atime">Time (IST, 24h)</label>
-              <input id="atime" type="time" className="select" value={auto.time || '08:00'} onChange={(e) => setAuto({ ...auto, time: e.target.value })} />
+              <label htmlFor="atimes">Times (IST, 24h · comma-separated)</label>
+              <input id="atimes" type="text" className="select" value={timesText} onChange={(e) => setTimesText(e.target.value)} placeholder="08:00, 20:00" />
+              <p className="meta">e.g. <code>08:00, 20:00</code> runs twice a day (8 AM and 8 PM). Each time fires once per day.</p>
             </div>
             <div>
-              <label htmlFor="acount">Members per day (max 5)</label>
+              <label htmlFor="acount">Members per run (max 5)</label>
               <input id="acount" className="num" type="number" min="1" max="5" value={auto.count || 5} onChange={(e) => setAuto({ ...auto, count: e.target.value })} />
             </div>
           </div>
@@ -2146,13 +2152,32 @@ function ImportUsers({ authFetch, onNavigate }) {
             {autoMsg && <span className={`status ${autoMsg.type}`}>{autoMsg.text}</span>}
           </div>
 
-          {auto.lastResult && (
-            <p className="meta" style={{ marginTop: 8 }}>
-              Last run{auto.lastResult.at ? ` ${new Date(auto.lastResult.at).toLocaleString()}` : ''}: added {auto.lastResult.added || 0}
-              {auto.lastResult.flooded ? ' · stopped on flood' : ''}{auto.lastResult.welcomeSent ? ' · welcome sent' : ''}.
-            </p>
+          <p className="meta">Runs on the 5-minute cron; the first tick at/after each time fires that slot once.</p>
+
+          {auto.history && auto.history.length > 0 && (
+            <>
+              <div className="sub-title" style={{ marginTop: 18 }}>Recent runs</div>
+              <div className="pool-list">
+                {[...auto.history].reverse().map((h, i) => {
+                  const total = (h.added || 0) + (h.privacy || 0) + (h.failed || 0);
+                  return (
+                    <div key={i} className="pool-row">
+                      <span className="pool-user">{h.at ? new Date(h.at).toLocaleString() : (h.slot || '')}</span>
+                      <span className={`badge ${h.added ? 'ok' : 'off'}`}>added {h.added || 0}</span>
+                      {h.privacy ? <span className="badge">privacy {h.privacy}</span> : null}
+                      {h.failed ? <span className="badge off">failed {h.failed}</span> : null}
+                      {h.flooded ? <span className="badge off">flood-stopped</span> : null}
+                      {h.welcomeSent ? <span className="badge ok">welcome</span> : null}
+                      {h.note ? <span className="meta">{h.note}</span> : null}
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="meta" style={{ marginTop: 8 }}>
+                Total added by automation: <strong>{auto.history.reduce((s, h) => s + (h.added || 0), 0)}</strong> across {auto.history.length} run(s) shown.
+              </p>
+            </>
           )}
-          <p className="meta">Runs on the 5-minute cron; the first tick at/after your time each day fires it once.</p>
         </Collapsible>
       )}
 

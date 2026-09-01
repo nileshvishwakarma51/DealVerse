@@ -950,23 +950,34 @@ function hhmmToMinutes(t) {
 
 async function getImportAuto() {
   const c = (await getConfig(IMPORTAUTO_KEY)) || {};
+  // Backward-compat: an older single `time` becomes a one-entry `times` list.
+  const times = Array.isArray(c.times) && c.times.length ? c.times : [c.time || '08:00'];
   return {
     enabled: !!c.enabled,
-    time: c.time || '08:00',
+    times,
     count: Math.min(Math.max(c.count || IMPORT_AUTO_MAX, 1), IMPORT_AUTO_MAX),
     target: c.target || '',
     welcome: c.welcome || '',
-    lastRunDate: c.lastRunDate || null,
+    firedSlots: c.firedSlots || [], // "<date> <HH:MM>" slots already run (per-slot de-dup)
     lastResult: c.lastResult || null,
+    history: c.history || [], // recent runs (newest last), capped
   };
 }
 
-async function saveImportAuto({ enabled, time, count, target, welcome }) {
+async function saveImportAuto({ enabled, times, time, count, target, welcome }) {
   const cfg = await getImportAuto();
   if (typeof enabled === 'boolean') cfg.enabled = enabled;
-  if (time !== undefined) {
-    if (hhmmToMinutes(time) == null) throw new ApiError(400, 'Time must be HH:MM (24-hour), e.g. 08:00.');
-    cfg.time = time;
+  const rawTimes = times !== undefined ? times : (time !== undefined ? time : undefined);
+  if (rawTimes !== undefined) {
+    const arr = (Array.isArray(rawTimes) ? rawTimes : String(rawTimes).split(','))
+      .map((s) => String(s).trim())
+      .filter(Boolean);
+    for (const t of arr) {
+      if (hhmmToMinutes(t) == null) throw new ApiError(400, `Invalid time "${t}". Use HH:MM (24-hour), e.g. 08:00.`);
+    }
+    // de-dupe + sort, cap to 4 slots/day
+    cfg.times = Array.from(new Set(arr)).sort().slice(0, 4);
+    if (!cfg.times.length) cfg.times = ['08:00'];
   }
   if (count !== undefined) cfg.count = Math.min(Math.max(parseInt(count, 10) || IMPORT_AUTO_MAX, 1), IMPORT_AUTO_MAX);
   if (target !== undefined) cfg.target = String(target || '').trim();
@@ -984,12 +995,22 @@ async function runImportAuto() {
   const cfg = await readCfg();
   if (!cfg.session) return { skipped: 'no-session' };
   const ist = istNow();
-  const sched = hhmmToMinutes(auto.time);
-  if (sched == null || ist.minutes < sched) return { skipped: 'not-time' };
-  if (auto.lastRunDate === ist.date) return { skipped: 'done-today' };
 
-  // Claim today's run up-front so an overlapping tick can't double-add.
-  auto.lastRunDate = ist.date;
+  // Fire the earliest due, not-yet-run slot for today (one slot per tick).
+  const fired = new Set(auto.firedSlots || []);
+  let slot = null;
+  for (const t of auto.times) {
+    const min = hhmmToMinutes(t);
+    if (min == null) continue;
+    const s = `${ist.date} ${t}`;
+    if (ist.minutes >= min && !fired.has(s)) { slot = s; break; }
+  }
+  if (!slot) return { skipped: 'not-due' };
+
+  // Claim the slot up-front so an overlapping tick can't double-run it. Keep only
+  // recent slots so the list can't grow forever.
+  fired.add(slot);
+  auto.firedSlots = Array.from(fired).slice(-12);
   await setConfig(IMPORTAUTO_KEY, auto);
 
   const pool = await readPool();
@@ -997,7 +1018,9 @@ async function runImportAuto() {
   const pending = (pool.users || []).filter((u) => u.status === 'pending');
   if (!pending.length) {
     const res = { added: 0, note: 'no pending members' };
-    auto.lastResult = { ...res, at: new Date().toISOString() };
+    const entry = { ...res, slot, at: new Date().toISOString() };
+    auto.lastResult = entry;
+    auto.history = [...(auto.history || []), entry].slice(-10);
     await setConfig(IMPORTAUTO_KEY, auto);
     await logAudit('mtproto', 'Import automation: no pending members to add.');
     return res;
@@ -1062,9 +1085,11 @@ async function runImportAuto() {
     }
 
     const res = { added, privacy, failed, flooded, welcomeSent };
-    auto.lastResult = { ...res, at: new Date().toISOString() };
+    const entry = { ...res, slot, at: new Date().toISOString() };
+    auto.lastResult = entry;
+    auto.history = [...(auto.history || []), entry].slice(-10);
     await setConfig(IMPORTAUTO_KEY, auto);
-    console.log('import.auto', JSON.stringify({ tenant: getTenant(), target: auto.target, ...res }));
+    console.log('import.auto', JSON.stringify({ tenant: getTenant(), target: auto.target, slot, ...res }));
     await logAudit('mtproto', `Import automation → ${auto.target}: added ${added}${welcomeSent ? ' + welcome sent' : ''} (privacy ${privacy}, failed ${failed}${flooded ? ', flood-stopped' : ''}).`);
     return res;
   } finally {
