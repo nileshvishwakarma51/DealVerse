@@ -44,7 +44,7 @@ async function buildLink(rawUrl) {
     const siteStripe = await getConfig(SITESTRIPE_KEY);
     if (siteStripe) {
       try {
-        const shortUrl = await requestShortUrl(siteStripe, cleanUrl);
+        const shortUrl = await requestShortUrl(siteStripe, cleanUrl, amazon.tag);
         await flagSiteStripe(siteStripe, 'ok'); // clears any prior "expired"
         return { success: true, platform: 'amazon', method: 'sitestripe', fallback: false, affiliateUrl: shortUrl, resolvedUrl: cleanUrl, asin };
       } catch (err) {
@@ -117,8 +117,9 @@ async function generateAmazonLink(rawUrl, opts) {
 async function testSiteStripe() {
   const siteStripe = await getConfig(SITESTRIPE_KEY);
   if (!siteStripe) throw new ApiError(400, 'No SiteStripe session configured yet.');
+  const amazon = (await getConfig(AMAZON_KEY)) || DEFAULT_AMAZON;
   try {
-    const shortUrl = await requestShortUrl(siteStripe, TEST_PRODUCT_URL);
+    const shortUrl = await requestShortUrl(siteStripe, TEST_PRODUCT_URL, amazon.tag);
     await setConfig(SITESTRIPE_KEY, {
       ...siteStripe,
       status: 'ok',

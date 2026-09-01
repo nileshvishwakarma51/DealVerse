@@ -202,10 +202,28 @@ function appendTag(cleanUrl, tag) {
   return u.toString();
 }
 
-// Call the stored SiteStripe session to get an affiliate short link.
-async function requestShortUrl(siteStripe, cleanProductUrl) {
+// SiteStripe's getShortUrl shortens a FULLY-AFFILIATED url — the associate tag
+// lives INSIDE `longUrl` (alongside linkCode/ref_), NOT as a top-level param.
+// So we must hand Amazon a tagged longUrl; a bare /dp/ASIN yields a short link
+// with no tag attribution. This mirrors exactly what the SiteStripe bar sends.
+function buildAffiliateLongUrl(baseUrl, tag) {
+  const u = new URL(baseUrl);
+  u.searchParams.set('linkCode', 'sl2');
+  u.searchParams.set('tag', tag);
+  u.searchParams.set('ref_', 'as_li_ss_tl');
+  return u.toString();
+}
+
+// Call the stored SiteStripe session to get an affiliate short link. `tag` is the
+// admin-configured associate tag; it is embedded in longUrl so the resulting
+// short link is attributed to it (single source of truth with TAG mode).
+async function requestShortUrl(siteStripe, cleanProductUrl, tag) {
   const endpoint = validateSiteStripeEndpoint(siteStripe.url);
-  endpoint.searchParams.set('longUrl', cleanProductUrl);
+  const longUrl = tag ? buildAffiliateLongUrl(cleanProductUrl, tag) : cleanProductUrl;
+  endpoint.searchParams.set('longUrl', longUrl);
+  // Keep the store/tracking id aligned with our tag when the captured request
+  // carried one (in practice storeId equalled the tag).
+  if (tag && endpoint.searchParams.has('storeId')) endpoint.searchParams.set('storeId', tag);
 
   const headers = {};
   for (const [name, value] of Object.entries(siteStripe.headers || {})) {
