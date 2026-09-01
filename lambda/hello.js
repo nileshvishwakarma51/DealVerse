@@ -205,7 +205,9 @@ exports.handler = async (event) => {
         try {
           const auto = await runAutomation('schedule', cronDeadline);
           const bc = await runBroadcasts();
-          summary.push({ tenant: m.id, auto, broadcasts: bc });
+          let imp = null;
+          try { imp = await mtproto.runImportAuto(); } catch (e) { imp = { error: e.message }; }
+          summary.push({ tenant: m.id, auto, broadcasts: bc, importAuto: imp });
         } catch (err) {
           console.error('cron tenant error', m.id, err && err.stack ? err.stack : err);
           summary.push({ tenant: m.id, error: err.message });
@@ -287,7 +289,7 @@ exports.handler = async (event) => {
       // Best-effort external cleanup before wiping data.
       try { await removeBot(); } catch { /* ignore */ }
       try { await mtproto.clearCredentials(); } catch { /* ignore */ }
-      for (const key of ['amazon', 'sitestripe', 'flipkart', 'telegram', 'listeners', 'automation', 'broadcasts', 'mtproto', 'import_pool']) {
+      for (const key of ['amazon', 'sitestripe', 'flipkart', 'telegram', 'listeners', 'automation', 'broadcasts', 'mtproto', 'import_pool', 'importauto']) {
         try { await deleteConfig(key); } catch { /* ignore */ }
       }
       await purgeTenant(id);
@@ -740,6 +742,16 @@ exports.handler = async (event) => {
       const { target } = parseBody(event);
       const result = await mtproto.importSyncTarget(target);
       return respond(200, { success: true, result });
+    }
+    if (method === 'GET' && reqPath.endsWith('/api/admin/mtproto/import/auto')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      return respond(200, { success: true, auto: await mtproto.getImportAuto() });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/import/auto')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { enabled, time, count, target, welcome } = parseBody(event);
+      const auto = await mtproto.saveImportAuto({ enabled, time, count, target, welcome });
+      return respond(200, { success: true, auto });
     }
     if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/import/clear')) {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });

@@ -1793,14 +1793,44 @@ function TelegramLogin({ authFetch }) {
         <p className="meta">Your api_hash and session are stored securely and never shown again. Use “Clear credentials” to switch accounts.</p>
       </div>
 
-      <MtprotoAccess authFetch={authFetch} startOpen />
+      <MtprotoAccess authFetch={authFetch} />
     </>
   );
 }
 
 /* ─────────────────────────── Import users (beta) ─────────────────────────── */
 
+const WELCOME_DEFAULT = `🔥 Welcome to DealVerse! 🔥
+
+Yahan milegi Amazon, Flipkart, Myntra, Meesho aur dusri online shopping websites ki best deals, offers aur lowest-price products 🛍️💸
+
+✅ Best price comparison
+🔥 Latest offers & discounts
+⚡ Limited-time deals
+
+Kuch buy karna ho? Hume message karo — hum aapke liye best possible deal dhoondhne ki koshish karenge.
+
+---
+
+🎁 2% Cashback bhi pao!
+
+🛒 Buy karo • Screenshot bhejo • 2% Cashback pao!
+
+Channel se buy karo ya @DealVerse_Auto_bot se apna product link banao.
+
+📸 Purchase ka screenshot bhejo → eligible purchase verify hone par 2% cashback UPI se diya jayega.
+
+📌 T&C: Affiliate commission receive hone ke baad hi 2% cashback diya jayega.
+
+📩 Contact: @Deal_verse_08
+
+🚀 DealVerse ko join karke rakho — best deal kabhi bhi aa sakti hai!`;
+
 function ImportUsers({ authFetch, onNavigate }) {
+  // daily auto-add
+  const [auto, setAuto] = useState(null);
+  const [savingAuto, setSavingAuto] = useState(false);
+  const [autoMsg, setAutoMsg] = useState(null);
   const [loggedIn, setLoggedIn] = useState(null);
   const [dialogs, setDialogs] = useState([]);
   const [pool, setPool] = useState(null);
@@ -1839,10 +1869,32 @@ function ImportUsers({ authFetch, onNavigate }) {
         const ddata = await dres.json();
         setDialogs((ddata.dialogs || []).filter((d) => d.isGroup || d.isChannel));
         await loadPool();
+        try {
+          const ares = await authFetch('api/admin/mtproto/import/auto');
+          const adata = await ares.json();
+          if (adata.auto) setAuto({ ...adata.auto, welcome: adata.auto.welcome || WELCOME_DEFAULT });
+        } catch { /* ignore */ }
       }
     } catch { setLoggedIn(false); }
   }
   useEffect(() => { init(); /* eslint-disable-next-line */ }, []);
+
+  async function saveAuto(patch) {
+    setSavingAuto(true); setAutoMsg(null);
+    try {
+      const body = { ...auto, ...patch };
+      const res = await authFetch('api/admin/mtproto/import/auto', {
+        method: 'POST',
+        body: JSON.stringify({ enabled: body.enabled, time: body.time, count: Number(body.count), target: body.target, welcome: body.welcome }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Save failed.');
+      setAuto({ ...data.auto, welcome: data.auto.welcome || WELCOME_DEFAULT });
+      setAutoMsg({ type: 'ok', text: 'Saved.' });
+    } catch (e) {
+      setAutoMsg({ type: 'err', text: e.message });
+    } finally { setSavingAuto(false); }
+  }
 
   async function fetchMembers() {
     if (!source.trim()) return;
@@ -1976,7 +2028,7 @@ function ImportUsers({ authFetch, onNavigate }) {
       </div>
 
       {/* Step 1 — fetch */}
-      <Collapsible title="Step 1 · Fetch members into the pool" bare defaultOpen={c.total === 0}>
+      <Collapsible title="Step 1 · Fetch members into the pool" bare>
         <label htmlFor="src">Source group (this account must be a member)</label>
         <input id="src" type="text" value={source} onChange={(e) => setSource(e.target.value)} placeholder="@somegroup or https://t.me/somegroup" />
         <label htmlFor="flim" style={{ marginTop: 12 }}>Max members to read this fetch</label>
@@ -1989,7 +2041,7 @@ function ImportUsers({ authFetch, onNavigate }) {
       </Collapsible>
 
       {/* Step 2 — add / message members one by one */}
-      <Collapsible title={`Step 2 · Add members to your channel${pool && pool.users ? ` (${pool.users.length})` : ''}`} bare defaultOpen={c.total > 0}>
+      <Collapsible title={`Step 2 · Add members to your channel${pool && pool.users ? ` (${pool.users.length})` : ''}`} bare>
         <label htmlFor="tgt">Target — your channel/group (only ones you admin are listed)</label>
         <select id="tgt" className="select" value={target} onChange={(e) => { setTarget(e.target.value); setAddMsg(null); }}>
           <option value="">Select a destination…</option>
@@ -2054,6 +2106,55 @@ function ImportUsers({ authFetch, onNavigate }) {
           </div>
         )}
       </Collapsible>
+
+      {/* Step 3 — daily automation */}
+      {auto && (
+        <Collapsible title={`Automation · daily auto-add${auto.enabled ? ' (on)' : ' (off)'}`} bare>
+          <p className="subtitle">
+            Once a day at your set time, automatically add up to {auto.count || 5} pending members to a channel, remove them
+            from the pool, and post your welcome message there. Kept small ({'≤'}5/day) to stay under Telegram's flood limit.
+          </p>
+
+          <div className="row" style={{ margin: '4px 0 14px' }}>
+            <Toggle checked={auto.enabled} onChange={(v) => saveAuto({ enabled: v })} label="Enable daily auto-add" />
+          </div>
+
+          <div className="auto-grid">
+            <div>
+              <label htmlFor="atime">Time (IST, 24h)</label>
+              <input id="atime" type="time" className="select" value={auto.time || '08:00'} onChange={(e) => setAuto({ ...auto, time: e.target.value })} />
+            </div>
+            <div>
+              <label htmlFor="acount">Members per day (max 5)</label>
+              <input id="acount" className="num" type="number" min="1" max="5" value={auto.count || 5} onChange={(e) => setAuto({ ...auto, count: e.target.value })} />
+            </div>
+          </div>
+
+          <label htmlFor="atgt" style={{ marginTop: 12 }}>Target channel (you must be admin)</label>
+          <select id="atgt" className="select" value={auto.target || ''} onChange={(e) => setAuto({ ...auto, target: e.target.value })}>
+            <option value="">Select a destination…</option>
+            {dialogs.filter((d) => d.admin).map((d) => (
+              <option key={d.id} value={d.username || d.id}>{d.title}{d.username ? ` (@${d.username})` : ''}</option>
+            ))}
+          </select>
+
+          <label htmlFor="awelcome" style={{ marginTop: 12 }}>Welcome message (posted to the channel after adding)</label>
+          <textarea id="awelcome" value={auto.welcome || ''} onChange={(e) => setAuto({ ...auto, welcome: e.target.value })} style={{ minHeight: 220 }} />
+
+          <div className="row">
+            <button onClick={() => saveAuto({})} disabled={savingAuto}>{savingAuto ? 'Saving…' : 'Save automation'}</button>
+            {autoMsg && <span className={`status ${autoMsg.type}`}>{autoMsg.text}</span>}
+          </div>
+
+          {auto.lastResult && (
+            <p className="meta" style={{ marginTop: 8 }}>
+              Last run{auto.lastResult.at ? ` ${new Date(auto.lastResult.at).toLocaleString()}` : ''}: added {auto.lastResult.added || 0}
+              {auto.lastResult.flooded ? ' · stopped on flood' : ''}{auto.lastResult.welcomeSent ? ' · welcome sent' : ''}.
+            </p>
+          )}
+          <p className="meta">Runs on the 5-minute cron; the first tick at/after your time each day fires it once.</p>
+        </Collapsible>
+      )}
 
       {errPopup && (
         <Modal title="Telegram response" onClose={() => setErrPopup(null)}>
@@ -2144,7 +2245,7 @@ function MtprotoAccess({ authFetch, startOpen = false }) {
         the listener uses the right method automatically. Read-only; nothing is auto-posted.
       </p>
 
-      <Collapsible title="API credentials" bare defaultOpen={!apiConfigured}>
+      <Collapsible title="API credentials" bare>
         <p className="subtitle">
           Create an app at <code>my.telegram.org → API development tools</code> for an <code>api_id</code> and
           <code> api_hash</code>. The api_hash is stored securely and never shown again. (You can create these on

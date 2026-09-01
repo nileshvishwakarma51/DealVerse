@@ -515,6 +515,9 @@ async function removeSource(peerRaw) {
 //      target channel, updating each candidate's status and logging per-user
 //      results to CloudWatch. Stops immediately on a flood limit.
 const IMPORT_POOL_KEY = 'import_pool'; // tenant-scoped candidate pool
+const IMPORTAUTO_KEY = 'importauto'; // tenant-scoped daily auto-add config
+const IMPORT_AUTO_MAX = 5; // hard cap per day for the scheduled auto-add (flood-safe)
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const IMPORT_PER_RUN_MAX = 15;
 const IMPORT_PER_DAY_MAX = 30;
 const IMPORT_MSG_PER_DAY_MAX = 20; // separate cap for direct messages
@@ -524,7 +527,16 @@ const IMPORT_PACE_MS = 3000; // gap between adds to reduce flood risk
 const IMPORT_BUDGET_MS = 45000; // stay well under the 60s Lambda timeout
 
 async function readPool() {
-  return (await getConfig(IMPORT_POOL_KEY)) || { users: [], source: null, target: null, fetchedAt: null };
+  const p = (await getConfig(IMPORT_POOL_KEY)) || {};
+  return {
+    users: p.users || [],
+    source: p.source || null,
+    target: p.target || null,
+    fetchedAt: p.fetchedAt || null,
+    message: p.message || '',
+    addedTotal: p.addedTotal || 0,
+    addedIds: p.addedIds || [], // ids ever added — so re-fetch never re-adds them
+  };
 }
 
 function poolCounts(pool) {
@@ -573,6 +585,8 @@ async function normalizePool() {
   if (legacy.length) {
     pool.users = users.filter((u) => u.status !== 'added');
     pool.addedTotal = (pool.addedTotal || 0) + legacy.length;
+    pool.addedIds = pool.addedIds || [];
+    for (const u of legacy) if (!pool.addedIds.includes(String(u.id))) pool.addedIds.push(String(u.id));
     await setConfig(IMPORT_POOL_KEY, pool);
   }
   return pool;
@@ -583,7 +597,12 @@ async function importStatus() {
 }
 
 async function importClear() {
-  await setConfig(IMPORT_POOL_KEY, { users: [], source: null, target: null, fetchedAt: null, addedTotal: 0 });
+  // Keep addedIds so cleared-then-refetched pools still won't re-add past members.
+  const prev = await readPool();
+  await setConfig(IMPORT_POOL_KEY, {
+    users: [], source: null, target: null, fetchedAt: null, message: prev.message || '',
+    addedTotal: prev.addedTotal || 0, addedIds: prev.addedIds || [],
+  });
   await logAudit('mtproto', 'Cleared the import pool.');
   return maskPool(await readPool());
 }
@@ -595,6 +614,7 @@ async function importFetch(sourceRaw, limitRaw) {
   const limit = clampInt(limitRaw, 1, IMPORT_FETCH_MAX, 100);
   const pool = await readPool();
   const byId = new Map((pool.users || []).map((u) => [String(u.id), u]));
+  const alreadyAdded = new Set((pool.addedIds || []).map(String)); // never re-fetch these
 
   const { client } = await connectClient(cfg, cfg.session);
   try {
@@ -617,7 +637,7 @@ async function importFetch(sourceRaw, limitRaw) {
       if (!u || u.bot || u.self || u.deleted) continue;
       if (!u.accessHash) { skippedNoHash++; continue; } // cannot be added later without it
       const id = String(u.id);
-      if (byId.has(id)) continue;
+      if (byId.has(id) || alreadyAdded.has(id)) continue; // skip existing + already-added
       if (byId.size >= IMPORT_POOL_CAP) break;
       byId.set(id, {
         id,
@@ -806,6 +826,8 @@ async function importAddOne(targetRaw, userIdRaw) {
     if (outcome.status === 'added') {
       pool.users = (pool.users || []).filter((x) => String(x.id) !== userId);
       pool.addedTotal = (pool.addedTotal || 0) + 1;
+      pool.addedIds = pool.addedIds || [];
+      if (!pool.addedIds.includes(userId)) pool.addedIds.push(userId); // so re-fetch skips them
     }
     pool.target = String(targetRaw).trim();
     await setConfig(IMPORT_POOL_KEY, pool);
@@ -909,6 +931,147 @@ async function importSyncTarget(targetRaw) {
   }
 }
 
+// ── Daily import automation ───────────────────────────────────────────────────
+// Once a day at a set IST time, add up to N (≤5, flood-safe) pending members to
+// a target channel, remove them from the pool, then post a welcome message to
+// that channel. Driven by the same 5-minute cron as listener automation.
+function istNow() {
+  const d = new Date(Date.now() + IST_OFFSET_MS);
+  return {
+    date: d.toISOString().slice(0, 10),
+    minutes: d.getUTCHours() * 60 + d.getUTCMinutes(),
+  };
+}
+function hhmmToMinutes(t) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || ''));
+  if (!m) return null;
+  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+}
+
+async function getImportAuto() {
+  const c = (await getConfig(IMPORTAUTO_KEY)) || {};
+  return {
+    enabled: !!c.enabled,
+    time: c.time || '08:00',
+    count: Math.min(Math.max(c.count || IMPORT_AUTO_MAX, 1), IMPORT_AUTO_MAX),
+    target: c.target || '',
+    welcome: c.welcome || '',
+    lastRunDate: c.lastRunDate || null,
+    lastResult: c.lastResult || null,
+  };
+}
+
+async function saveImportAuto({ enabled, time, count, target, welcome }) {
+  const cfg = await getImportAuto();
+  if (typeof enabled === 'boolean') cfg.enabled = enabled;
+  if (time !== undefined) {
+    if (hhmmToMinutes(time) == null) throw new ApiError(400, 'Time must be HH:MM (24-hour), e.g. 08:00.');
+    cfg.time = time;
+  }
+  if (count !== undefined) cfg.count = Math.min(Math.max(parseInt(count, 10) || IMPORT_AUTO_MAX, 1), IMPORT_AUTO_MAX);
+  if (target !== undefined) cfg.target = String(target || '').trim();
+  if (welcome !== undefined) cfg.welcome = String(welcome || '').slice(0, 3500);
+  if (cfg.enabled && !cfg.target) throw new ApiError(400, 'Select a target channel before enabling automation.');
+  await setConfig(IMPORTAUTO_KEY, cfg);
+  return cfg;
+}
+
+// Cron entry: run once/day at/after the scheduled IST time. Best-effort; never
+// throws (the cron must survive one tenant's failure).
+async function runImportAuto() {
+  const auto = await getImportAuto();
+  if (!auto.enabled || !auto.target) return { skipped: 'off' };
+  const cfg = await readCfg();
+  if (!cfg.session) return { skipped: 'no-session' };
+  const ist = istNow();
+  const sched = hhmmToMinutes(auto.time);
+  if (sched == null || ist.minutes < sched) return { skipped: 'not-time' };
+  if (auto.lastRunDate === ist.date) return { skipped: 'done-today' };
+
+  // Claim today's run up-front so an overlapping tick can't double-add.
+  auto.lastRunDate = ist.date;
+  await setConfig(IMPORTAUTO_KEY, auto);
+
+  const pool = await readPool();
+  const want = Math.min(Math.max(auto.count || IMPORT_AUTO_MAX, 1), IMPORT_AUTO_MAX);
+  const pending = (pool.users || []).filter((u) => u.status === 'pending');
+  if (!pending.length) {
+    const res = { added: 0, note: 'no pending members' };
+    auto.lastResult = { ...res, at: new Date().toISOString() };
+    await setConfig(IMPORTAUTO_KEY, auto);
+    await logAudit('mtproto', 'Import automation: no pending members to add.');
+    return res;
+  }
+
+  // eslint-disable-next-line global-require
+  const bigInt = require('big-integer');
+  const { client, Api } = await connectClient(cfg, cfg.session);
+  try {
+    let target;
+    try {
+      target = await client.getEntity(normalizePeer(auto.target));
+    } catch (err) {
+      await logAudit('mtproto', `Import automation: could not resolve target ${auto.target} — ${rpcMessage(err)}`);
+      return { error: 'bad-target' };
+    }
+
+    const addedIds = new Set((pool.addedIds || []).map(String));
+    let added = 0;
+    let privacy = 0;
+    let failed = 0;
+    let flooded = false;
+    for (const u of pending) {
+      if (added >= want) break;
+      try {
+        const inputUser = new Api.InputUser({ userId: bigInt(u.id), accessHash: bigInt(u.accessHash) });
+        await client.invoke(new Api.channels.InviteToChannel({ channel: target, users: [inputUser] }));
+        added++;
+        addedIds.add(String(u.id));
+        pool.users = pool.users.filter((x) => String(x.id) !== String(u.id));
+        pool.addedTotal = (pool.addedTotal || 0) + 1;
+        await sleep(IMPORT_PACE_MS);
+      } catch (err) {
+        const raw = rpcMessage(err);
+        const m = raw.toUpperCase();
+        if (m.includes('ALREADY_PARTICIPANT')) {
+          addedIds.add(String(u.id));
+          pool.users = pool.users.filter((x) => String(x.id) !== String(u.id));
+          pool.addedTotal = (pool.addedTotal || 0) + 1;
+        } else if (m.includes('USER_PRIVACY') || m.includes('NOT_MUTUAL') || m.includes('USER_CHANNELS_TOO_MUCH') || m.includes('USER_BOT') || m.includes('USER_KICKED')) {
+          u.status = 'privacy'; u.lastError = raw; privacy++;
+        } else if (m.includes('PEER_FLOOD') || m.includes('FLOOD_WAIT')) {
+          flooded = true; u.lastError = floodMessage(err); break;
+        } else {
+          u.status = 'failed'; u.lastError = raw; failed++;
+        }
+      }
+    }
+    pool.addedIds = Array.from(addedIds);
+    pool.target = auto.target;
+    await setConfig(IMPORT_POOL_KEY, pool);
+
+    // Post the welcome message to the same channel (via the user account).
+    let welcomeSent = false;
+    if (added > 0 && auto.welcome && auto.welcome.trim()) {
+      try {
+        await client.sendMessage(target, { message: auto.welcome });
+        welcomeSent = true;
+      } catch (err) {
+        console.warn('import.auto welcome failed', rpcMessage(err));
+      }
+    }
+
+    const res = { added, privacy, failed, flooded, welcomeSent };
+    auto.lastResult = { ...res, at: new Date().toISOString() };
+    await setConfig(IMPORTAUTO_KEY, auto);
+    console.log('import.auto', JSON.stringify({ tenant: getTenant(), target: auto.target, ...res }));
+    await logAudit('mtproto', `Import automation → ${auto.target}: added ${added}${welcomeSent ? ' + welcome sent' : ''} (privacy ${privacy}, failed ${failed}${flooded ? ', flood-stopped' : ''}).`);
+    return res;
+  } finally {
+    await safeDisconnect(client);
+  }
+}
+
 // ── Error helpers ─────────────────────────────────────────────────────────────
 function rpcMessage(err) {
   return String((err && (err.errorMessage || err.message)) || '');
@@ -984,6 +1147,9 @@ module.exports = {
   importSyncTarget,
   importStatus,
   importClear,
+  getImportAuto,
+  saveImportAuto,
+  runImportAuto,
   getSources,
   addSource,
   removeSource,

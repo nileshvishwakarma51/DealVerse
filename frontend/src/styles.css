@@ -236,6 +236,8 @@ label { display: block; font-size: .82rem; font-weight: 600; color: var(--ink-so
 .pool-user { font-family: "Sora"; font-size: .82rem; color: var(--ink-soft); min-width: 120px; }
 .pool-actions { margin-left: auto; display: inline-flex; gap: 6px; }
 .pool-btn { padding: 5px 12px; font-size: .78rem; }
+.auto-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
+.auto-grid input[type="time"] { width: 100%; }
 .pool-err { flex-basis: 100%; color: var(--red); font-size: .72rem; word-break: break-word; }
 .err-dump { background: var(--bg-2); border: 1px solid rgba(248,113,113,.4); color: #fca5a5; border-radius: 10px; padding: 12px 14px; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: .82rem; white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; margin: 6px 0 12px; }
 
