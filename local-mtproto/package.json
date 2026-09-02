@@ -1,0 +1,15 @@
+{
+  "name": "dealverse-local-mtproto",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Always-on local MTProto listener: watches your source channels in real time (via your Telegram user account) and pushes each new message to the DealVerse Lambda ingest endpoint for instant convert + publish.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "telegram": "2.26.22",
+    "input": "^1.0.1",
+    "dotenv": "^16.4.5"
+  }
+}

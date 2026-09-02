@@ -61,6 +61,8 @@ const { getAutomation, maskAutomation, runAutomation } = require('./lib/automati
 // lazy-required INSIDE its functions — so requiring it here can never affect
 // existing routes or the automation tick, even if GramJS is not installed.
 const mtproto = require('./lib/mtproto');
+// Real-time ingest from the local MTProto listener (see /local-mtproto).
+const { ingestMessage } = require('./lib/ingest');
 
 // ── Static React build (copied into lambda/public at build time) ────────────
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -289,7 +291,7 @@ exports.handler = async (event) => {
       // Best-effort external cleanup before wiping data.
       try { await removeBot(); } catch { /* ignore */ }
       try { await mtproto.clearCredentials(); } catch { /* ignore */ }
-      for (const key of ['amazon', 'sitestripe', 'flipkart', 'telegram', 'listeners', 'automation', 'broadcasts', 'mtproto', 'import_pool', 'importauto']) {
+      for (const key of ['amazon', 'sitestripe', 'flipkart', 'telegram', 'listeners', 'automation', 'broadcasts', 'mtproto', 'import_pool', 'importauto', 'ingest_seen']) {
         try { await deleteConfig(key); } catch { /* ignore */ }
       }
       await purgeTenant(id);
@@ -628,6 +630,12 @@ exports.handler = async (event) => {
       return respond(200, { success: true, mtproto: await mtproto.status() });
     }
 
+    // Sensitive: export the logged-in session for the local MTProto listener.
+    if (method === 'GET' && reqPath.endsWith('/api/admin/mtproto/session')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      return respond(200, { success: true, ...(await mtproto.exportSession()) });
+    }
+
     // Save api_id + api_hash.
     if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/api')) {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
@@ -749,9 +757,17 @@ exports.handler = async (event) => {
     }
     if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/import/auto')) {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
-      const { enabled, time, count, target, welcome } = parseBody(event);
-      const auto = await mtproto.saveImportAuto({ enabled, time, count, target, welcome });
+      const { enabled, times, time, count, target, welcome } = parseBody(event);
+      const auto = await mtproto.saveImportAuto({ enabled, times, time, count, target, welcome });
       return respond(200, { success: true, auto });
+    }
+
+    // ── Real-time ingest: the local MTProto listener pushes new source messages
+    // here to be converted + published instantly (protected; tenant from token).
+    if (method === 'POST' && reqPath.endsWith('/api/admin/ingest')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const result = await ingestMessage(parseBody(event));
+      return respond(200, { success: true, ...result });
     }
     if (method === 'POST' && reqPath.endsWith('/api/admin/mtproto/import/clear')) {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });

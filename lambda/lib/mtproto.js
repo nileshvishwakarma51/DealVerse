@@ -268,6 +268,22 @@ async function status() {
   return maskStatus(await readCfg());
 }
 
+// SENSITIVE: return the stored session + api creds so the LOCAL listener (see
+// /local-mtproto) can reuse the account already logged in via the admin
+// "Telegram login" tab — no second phone login. Merchant-authed; only ever sent
+// to the merchant's own tool over HTTPS. Never logged.
+async function exportSession() {
+  const cfg = await readCfg();
+  if (!cfg.session) {
+    throw new ApiError(400, 'No Telegram account is logged in. Log in under "Telegram login" first.');
+  }
+  return {
+    apiId: cfg.apiId ? String(cfg.apiId) : null,
+    apiHash: cfg.apiHash || null,
+    session: cfg.session,
+  };
+}
+
 // ── Read-only: list the account's groups/channels (dialogs). ─────────────────
 async function listDialogs(limitRaw) {
   const cfg = await readCfg();
@@ -1155,6 +1171,7 @@ module.exports = {
   MTPROTO_KEY,
   maskStatus,
   status,
+  exportSession,
   saveApi,
   sendCode,
   signIn,

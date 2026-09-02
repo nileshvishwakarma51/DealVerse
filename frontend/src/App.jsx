@@ -577,6 +577,7 @@ function BroadcastConfig({ authFetch }) {
   }
 
   async function remove(id) {
+    if (!window.confirm('Delete this scheduled message? This cannot be undone.')) return;
     const res = await authFetch('api/admin/broadcasts/delete', { method: 'POST', body: JSON.stringify({ id }) });
     const data = await res.json();
     setItems(data.broadcasts || []);
@@ -1063,6 +1064,7 @@ function TelegramConfig({ authFetch }) {
     load();
   }
   async function removeChannel(id) {
+    if (!window.confirm('Remove this channel from the bot? The bot will stop posting to it.')) return;
     await authFetch('api/admin/telegram/channel/remove', { method: 'POST', body: JSON.stringify({ id }) });
     load();
   }
@@ -1087,13 +1089,11 @@ function TelegramConfig({ authFetch }) {
         </div>
       ) : (
         <>
-          <div className="statusbox">
+          <div className="statusbox" onClick={() => setExpanded((v) => !v)} style={{ cursor: 'pointer' }}>
             <div>
               <strong>@{tg.username || 'bot'}</strong>{' '}
               {tg.confirmed ? <span className="badge ok">active</span> : <span className="badge">setup pending</span>}
-              <button className="link" style={{ float: 'right' }} onClick={() => setExpanded((v) => !v)}>
-                {expanded ? '▲' : '▼'}
-              </button>
+              <span className="chev" style={{ float: 'right' }}>{expanded ? '▲' : '▼'}</span>
             </div>
             <div className="meta">webhook: {tg.webhookConfigured ? 'registered' : 'not set'}</div>
             <div className="meta">channels: {(tg.channels || []).length}</div>
@@ -1407,6 +1407,7 @@ function ListenerConfig({ authFetch, onNavigate }) {
   }, []);
 
   async function remove(username) {
+    if (!window.confirm(`Remove listener @${username}? It will stop being read and auto-posted.`)) return;
     await authFetch('api/admin/listener/remove', { method: 'POST', body: JSON.stringify({ username }) });
     load();
   }
@@ -1826,10 +1827,17 @@ Channel se buy karo ya @DealVerse_Auto_bot se apna product link banao.
 
 🚀 DealVerse ko join karke rakho — best deal kabhi bhi aa sakti hai!`;
 
+// 12 hours after HH:MM (wraps past midnight). Used for the "twice a day" option.
+function plus12h(hhmm) {
+  const [h, m] = String(hhmm || '08:00').split(':').map((x) => parseInt(x, 10) || 0);
+  return `${String((h + 12) % 24).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
 function ImportUsers({ authFetch, onNavigate }) {
   // daily auto-add
   const [auto, setAuto] = useState(null);
-  const [timesText, setTimesText] = useState('08:00, 20:00');
+  const [timeOne, setTimeOne] = useState('08:00');
+  const [twiceDaily, setTwiceDaily] = useState(false);
   const [savingAuto, setSavingAuto] = useState(false);
   const [autoMsg, setAutoMsg] = useState(null);
   const [loggedIn, setLoggedIn] = useState(null);
@@ -1875,7 +1883,9 @@ function ImportUsers({ authFetch, onNavigate }) {
           const adata = await ares.json();
           if (adata.auto) {
             setAuto({ ...adata.auto, welcome: adata.auto.welcome || WELCOME_DEFAULT });
-            if (adata.auto.times && adata.auto.times.length) setTimesText(adata.auto.times.join(', '));
+            const times = adata.auto.times && adata.auto.times.length ? adata.auto.times : ['08:00'];
+            setTimeOne(times[0]);
+            setTwiceDaily(times.length >= 2);
           }
         } catch { /* ignore */ }
       }
@@ -1887,14 +1897,18 @@ function ImportUsers({ authFetch, onNavigate }) {
     setSavingAuto(true); setAutoMsg(null);
     try {
       const body = { ...auto, ...patch };
+      const times = twiceDaily ? [timeOne, plus12h(timeOne)] : [timeOne];
       const res = await authFetch('api/admin/mtproto/import/auto', {
         method: 'POST',
-        body: JSON.stringify({ enabled: body.enabled, times: timesText, count: Number(body.count), target: body.target, welcome: body.welcome }),
+        body: JSON.stringify({ enabled: body.enabled, times, count: Number(body.count), target: body.target, welcome: body.welcome }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Save failed.');
       setAuto({ ...data.auto, welcome: data.auto.welcome || WELCOME_DEFAULT });
-      if (data.auto.times && data.auto.times.length) setTimesText(data.auto.times.join(', '));
+      if (data.auto.times && data.auto.times.length) {
+        setTimeOne(data.auto.times[0]);
+        setTwiceDaily(data.auto.times.length >= 2);
+      }
       setAutoMsg({ type: 'ok', text: 'Saved.' });
     } catch (e) {
       setAutoMsg({ type: 'err', text: e.message });
@@ -2126,15 +2140,23 @@ function ImportUsers({ authFetch, onNavigate }) {
 
           <div className="auto-grid">
             <div>
-              <label htmlFor="atimes">Times (IST, 24h · comma-separated)</label>
-              <input id="atimes" type="text" className="select" value={timesText} onChange={(e) => setTimesText(e.target.value)} placeholder="08:00, 20:00" />
-              <p className="meta">e.g. <code>08:00, 20:00</code> runs twice a day (8 AM and 8 PM). Each time fires once per day.</p>
+              <label htmlFor="atime">Time (IST, 24h)</label>
+              <input id="atime" type="time" className="select" value={timeOne} onChange={(e) => setTimeOne(e.target.value)} />
             </div>
             <div>
               <label htmlFor="acount">Members per run (max 5)</label>
               <input id="acount" className="num" type="number" min="1" max="5" value={auto.count || 5} onChange={(e) => setAuto({ ...auto, count: e.target.value })} />
             </div>
           </div>
+
+          <div className="row" style={{ marginTop: 12 }}>
+            <Toggle checked={twiceDaily} onChange={setTwiceDaily} label="Run twice a day" />
+          </div>
+          <p className="meta">
+            {twiceDaily
+              ? <>Runs at <strong>{timeOne}</strong> and <strong>{plus12h(timeOne)}</strong> (12 hours apart), each once per day.</>
+              : <>Runs once a day at <strong>{timeOne}</strong>. Turn on “Run twice a day” to also run at <strong>{plus12h(timeOne)}</strong>.</>}
+          </p>
 
           <label htmlFor="atgt" style={{ marginTop: 12 }}>Target channel (you must be admin)</label>
           <select id="atgt" className="select" value={auto.target || ''} onChange={(e) => setAuto({ ...auto, target: e.target.value })}>
