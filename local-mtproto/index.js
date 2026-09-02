@@ -253,7 +253,7 @@ async function main() {
         else if (m.includes('INVITE') || m.includes('PRIVATE') || m.includes('ADMIN')) joined = 'private — must already be a member';
         else joined = `join skipped (${(je && je.errorMessage) || 'ok'})`;
       }
-      chatMap.set(bareId(ent.id), { username: uname, title: ent.title || uname });
+      chatMap.set(bareId(ent.id), { username: uname, title: ent.title || uname, entity: ent });
       status.sources.push(uname);
       broadcastStatus();
       log(`  monitoring @${uname} ✓ (${joined})`);
@@ -263,6 +263,39 @@ async function main() {
   }
   if (!chatMap.size) { console.error('No sources resolved. Exiting.'); process.exit(1); }
 
+  // Shared handling for both the real-time push and the polling safety-net.
+  async function processMessage(chatId, meta, msg, via) {
+    if (!msg || msg.id == null) return;
+    const key = `${chatId}:${msg.id}`;
+    if (seen.has(key)) return; // de-dup across push + poll
+    seen.add(key);
+    if (seen.size > 5000) seen.delete(seen.values().next().value); // bound memory
+
+    const text = msg.message || '';
+    const links = extractLinks(msg);
+    log(`New message in @${meta.username} (msg ${msg.id})${links.length ? ` · ${links.length} link(s)` : ''}${via === 'poll' ? ' [poll]' : ''}`);
+    pushEvent({ type: 'message', channel: meta.username, msgId: msg.id, links: links.length, text });
+
+    // DRY_RUN=1 verifies listening without pushing to the Lambda (nothing posts).
+    if (process.env.DRY_RUN) {
+      log('  (dry-run) received OK — not sending to Lambda');
+      pushEvent({ type: 'sent', channel: meta.username, msgId: msg.id, ok: true, posted: 0, converted: 0, skipped: 'dry-run' });
+      return;
+    }
+
+    const { ok, data } = await pushIngest({
+      sourceChatId: chatId, sourceUsername: meta.username, sourceTitle: meta.title, msgId: msg.id, text, links,
+    });
+    if (ok) log(`  → sent to DealVerse ✓ (posted ${data.posted ?? 0}, converted ${data.converted ?? 0}${data.skipped ? `, ${data.skipped}` : ''})`);
+    else log('  → ingest error:', (data && data.error) || 'unknown');
+    pushEvent({
+      type: 'sent', channel: meta.username, msgId: msg.id, ok,
+      posted: data && data.posted, converted: data && data.converted, skipped: data && data.skipped,
+      error: ok ? null : ((data && data.error) || 'unknown'),
+    });
+  }
+
+  // Real-time push — instant, whenever Telegram delivers the update.
   const handler = async (event) => {
     try {
       const msg = event.message;
@@ -271,48 +304,46 @@ async function main() {
       const chatId = bareId(rawId);
       const meta = chatMap.get(chatId);
       if (process.env.DEBUG) log(`[debug] update from chat raw=${rawId} bare=${chatId} → ${meta ? 'MATCH @' + meta.username : 'ignore'} (msg ${msg.id})`);
-      if (!meta) return; // message from a chat we're not watching
-      const key = `${chatId}:${msg.id}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-
-      const text = msg.message || '';
-      const links = extractLinks(msg);
-      log(`New message in @${meta.username} (msg ${msg.id})${links.length ? ` · ${links.length} link(s)` : ''}`);
-      pushEvent({ type: 'message', channel: meta.username, msgId: msg.id, links: links.length, text });
-
-      // DRY_RUN=1 verifies listening without pushing to the Lambda (nothing posts).
-      if (process.env.DRY_RUN) {
-        log('  (dry-run) received OK — not sending to Lambda');
-        pushEvent({ type: 'sent', channel: meta.username, msgId: msg.id, ok: true, posted: 0, converted: 0, skipped: 'dry-run' });
-        return;
-      }
-
-      const { ok, data } = await pushIngest({
-        sourceChatId: chatId,
-        sourceUsername: meta.username,
-        sourceTitle: meta.title,
-        msgId: msg.id,
-        text,
-        links,
-      });
-      if (ok) {
-        log(`  → sent to DealVerse ✓ (posted ${data.posted ?? 0}, converted ${data.converted ?? 0}${data.skipped ? `, ${data.skipped}` : ''})`);
-      } else {
-        log('  → ingest error:', (data && data.error) || 'unknown');
-      }
-      pushEvent({
-        type: 'sent', channel: meta.username, msgId: msg.id, ok,
-        posted: data && data.posted, converted: data && data.converted, skipped: data && data.skipped,
-        error: ok ? null : ((data && data.error) || 'unknown'),
-      });
-    } catch (e) {
-      log('handler error:', (e && e.message) || e);
-    }
+      if (!meta) return;
+      await processMessage(chatId, meta, msg, 'push');
+    } catch (e) { log('handler error:', (e && e.message) || e); }
   };
-  // Prime the update state so Telegram starts streaming channel updates to us.
-  try { await client.getDialogs({ limit: 10 }); } catch { /* best-effort */ }
+  try { await client.getDialogs({ limit: 30 }); } catch { /* best-effort */ }
   client.addEventHandler(handler, new NewMessage({}));
+
+  // Polling safety-net — some channels (esp. busy broadcast channels) don't
+  // reliably push real-time updates even when joined. Poll each source's latest
+  // messages every POLL_SECONDS and process anything new; the `seen` de-dup means
+  // the push and the poll never double-send. Instant channels stay instant (the
+  // push wins); the rest arrive within POLL_SECONDS.
+  const POLL_MS = Math.max(parseInt(process.env.POLL_SECONDS || '30', 10), 10) * 1000;
+  const lastSeen = new Map(); // chatId -> highest msg id already handled
+  for (const [chatId, meta] of chatMap) {
+    try {
+      const last = await client.getMessages(meta.entity, { limit: 1 });
+      const m = last && last[0];
+      lastSeen.set(chatId, (m && m.id) || 0); // start from "now" — don't replay history
+      log(`  read @${meta.username} ✓ last msg ${(m && m.id) || '-'}${m && m.message ? ` — "${m.message.replace(/\s+/g, ' ').slice(0, 50)}"` : ''}`);
+    } catch (e) {
+      lastSeen.set(chatId, 0);
+      log(`  ⚠ cannot read @${meta.username}: ${(e && e.message) || e}`);
+    }
+  }
+  setInterval(async () => {
+    for (const [chatId, meta] of chatMap) {
+      try {
+        const msgs = await client.getMessages(meta.entity, { limit: 15 });
+        if (!msgs || !msgs.length) continue;
+        const since = lastSeen.get(chatId) || 0;
+        const fresh = msgs.filter((m) => m && m.id > since).sort((a, b) => a.id - b.id);
+        for (const m of fresh) await processMessage(chatId, meta, m, 'poll');
+        lastSeen.set(chatId, Math.max(since, ...msgs.map((m) => (m && m.id) || 0)));
+      } catch (e) {
+        if (process.env.DEBUG) log(`[debug] poll @${meta.username} error: ${(e && e.message) || e}`);
+      }
+    }
+  }, POLL_MS);
+  log(`Polling safety-net: every ${POLL_MS / 1000}s across ${chatMap.size} source(s).`);
 
   status.startedAt = Date.now();
   broadcastStatus();
