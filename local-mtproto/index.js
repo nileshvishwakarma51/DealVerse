@@ -20,7 +20,7 @@ const { StringSession } = require('telegram/sessions');
 const { NewMessage } = require('telegram/events');
 const input = require('input');
 
-const SESSION_FILE = path.join(__dirname, '.session');
+const SESSION_FILE = process.env.SESSION_PATH || path.join(__dirname, '.session');
 
 const cfg = {
   apiId: parseInt(process.env.TG_API_ID, 10),
@@ -337,5 +337,11 @@ async function main() {
     }
   }, 30000);
 }
+
+// Exit on any unrecoverable error so the process manager (pm2 / Docker
+// restart:unless-stopped) restarts us cleanly instead of hanging in a bad state.
+// Transient connection drops are handled by the reconnect loop, not here.
+process.on('uncaughtException', (e) => { console.error('Fatal (uncaught):', (e && e.message) || e); process.exit(1); });
+process.on('unhandledRejection', (e) => { console.error('Fatal (unhandledRejection):', (e && e.message) || e); process.exit(1); });
 
 main().catch((e) => { console.error('Fatal:', (e && e.message) || e); process.exit(1); });

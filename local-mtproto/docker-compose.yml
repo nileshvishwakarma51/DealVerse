@@ -1,0 +1,13 @@
+# Optional one-command deploy (alternative to pm2):
+#   docker compose up -d --build
+# Always-on + restarts on crash and on reboot (when the Docker service is enabled).
+services:
+  listener:
+    build: .
+    container_name: mtproto-listener
+    env_file: .env
+    restart: unless-stopped
+    # Dashboard bound to localhost only — reach it via an SSH tunnel, not the public IP:
+    #   ssh -L 4600:localhost:4600 user@vm   then open http://localhost:4600
+    ports:
+      - "127.0.0.1:4600:4600"

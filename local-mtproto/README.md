@@ -54,6 +54,56 @@ You'll see logs like:
 Keep the window open — it works as long as the process runs. It auto-reconnects
 if the connection drops. Stop with **Ctrl+C**.
 
+## Deploy to an always-on server (so your laptop can be off)
+
+The listener is **outbound-only** — it needs no open ports / API Gateway to work.
+Put it on any tiny always-on Linux box (e.g. an **Oracle Cloud Always-Free VM**, $0)
+and run it with **pm2** so it restarts on crash and on reboot.
+
+### 1. Get the code onto the VM
+Private repo → either clone with a GitHub token/deploy key, or copy from your laptop:
+```bash
+scp -r local-mtproto  ubuntu@<vm-ip>:~/       # from your laptop
+# ...or on the VM:  git clone <repo-url> && cd <repo>/local-mtproto
+```
+
+### 2. Install Node + pm2, configure, run
+```bash
+# on the VM (Ubuntu):
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+cd ~/local-mtproto
+cp .env.example .env        # fill DEALVERSE_* ; leave TG_* blank to reuse your
+                            # admin Telegram login (fetched from the Lambda).
+                            # add EXTRA_SOURCES=... for local-only channels.
+npm install --omit=dev
+sudo npm install -g pm2
+pm2 start ecosystem.config.js
+pm2 save
+pm2 startup                 # run the exact line it prints (enables start-on-boot)
+pm2 logs mtproto-listener   # watch it connect + monitor channels
+```
+That's it — it now runs 24/7 and survives reboots.
+
+### Optional: Docker instead of pm2
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+cd ~/local-mtproto && cp .env.example .env   # edit as above
+sudo docker compose up -d --build
+sudo docker compose logs -f
+```
+
+### Viewing the dashboard remotely
+The dashboard stays bound to the server's localhost (not public). Tunnel to it:
+```bash
+ssh -L 4600:localhost:4600 ubuntu@<vm-ip>
+# then open http://localhost:4600 in your browser
+```
+
+### ⚠ Run it in only ONE place
+Two listeners on the same Telegram login split the update stream and miss
+messages. Once the server copy is running, **stop the one on your laptop**.
+
 ## Notes / limitations
 - It listens only while running. For 24/7 you'd move it to an always-on machine
   (small VPS / Raspberry Pi) — the code is unchanged; just run it there.
