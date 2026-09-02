@@ -7,7 +7,7 @@ WORKDIR /app
 # Install deps first for better layer caching. GramJS's only native deps
 # (bufferutil / utf-8-validate) are OPTIONAL — npm skips them on slim and `ws`
 # works without them, so no C toolchain is needed and the image stays small.
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci --omit=dev
 
 COPY index.js ./
