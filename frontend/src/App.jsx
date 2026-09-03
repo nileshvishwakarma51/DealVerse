@@ -649,7 +649,8 @@ function BroadcastConfig({ authFetch }) {
 function AuditConfig({ authFetch }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [openIdx, setOpenIdx] = useState(null);
+  const [openId, setOpenId] = useState(null);
+  const [query, setQuery] = useState('');
 
   async function load() {
     setLoading(true);
@@ -661,19 +662,36 @@ function AuditConfig({ authFetch }) {
   }
   useEffect(() => { load().catch(() => setLoading(false)); /* eslint-disable-next-line */ }, []);
 
+  const q = query.trim().toLowerCase();
+  const shown = q
+    ? items.filter((a) =>
+        `${a.type || ''} ${a.message || ''} ${a.detail || ''}`.toLowerCase().includes(q))
+    : items;
+
   return (
     <>
       <p className="subtitle">Recent activity (kept 2 days). Rows with a ▸ can be expanded to see the full flow — which links were found, how each converted, and whether it posted (and why not).</p>
-      <div className="row" style={{ marginTop: 0 }}>
+      <div className="row" style={{ marginTop: 0, gap: 8 }}>
+        <input
+          type="text"
+          className="audit-search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Filter logs… (e.g. user, cron, flipkart, @channel, error)"
+        />
+        {query && <button className="secondary" onClick={() => setQuery('')}>Clear</button>}
         <button className="secondary" onClick={load} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
       </div>
       {!loading && items.length === 0 && <p className="meta">No activity yet.</p>}
-      {items.map((a, i) => {
+      {!loading && items.length > 0 && shown.length === 0 && <p className="meta">No logs match “{query}”.</p>}
+      {q && shown.length > 0 && <p className="meta">{shown.length} of {items.length} logs match.</p>}
+      {shown.map((a, i) => {
+        const id = a.at ? `${a.at}#${i}` : String(i);
         const hasDetail = !!a.detail;
-        const open = openIdx === i;
+        const open = openId === id;
         return (
-          <div key={i} className={`audit-row${hasDetail ? ' has-detail' : ''}`}>
-            <div className="audit-head" onClick={() => hasDetail && setOpenIdx(open ? null : i)}>
+          <div key={id} className={`audit-row${hasDetail ? ' has-detail' : ''}`}>
+            <div className="audit-head" onClick={() => hasDetail && setOpenId(open ? null : id)}>
               {hasDetail && <span className="audit-chev">{open ? '▾' : '▸'}</span>}
               <span className={`badge audit-${a.type}`}>{a.type}</span>
               <span className="audit-msg">{a.message}</span>
