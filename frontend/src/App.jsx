@@ -467,7 +467,6 @@ function AdminPanel({ token, onUnauthorized, onLogout, onHome }) {
     ['telegram-login', 'Telegram login', IC.key],
     ['telegram', 'Telegram bot', IC.send],
     ['listeners', 'Listener channels', IC.rss],
-    ['automation', 'Automation', IC.clock],
     ['broadcasts', 'Custom messages', IC.mega],
     ['import-users', 'Import users', IC.users],
     ['price-tracker', 'Price-tracker', IC.tag],
@@ -482,7 +481,6 @@ function AdminPanel({ token, onUnauthorized, onLogout, onHome }) {
       case 'telegram-login': return <TelegramLogin authFetch={authFetch} />;
       case 'telegram': return <TelegramConfig authFetch={authFetch} />;
       case 'listeners': return <ListenerConfig authFetch={authFetch} onNavigate={go} />;
-      case 'automation': return <AutomationConfig authFetch={authFetch} />;
       case 'broadcasts': return <BroadcastConfig authFetch={authFetch} />;
       case 'import-users': return <ImportUsers authFetch={authFetch} onNavigate={go} />;
       case 'price-tracker': return <PriceTrackerConfig authFetch={authFetch} />;
@@ -737,57 +735,6 @@ function AuditConfig({ authFetch }) {
           </div>
         );
       })}
-    </>
-  );
-}
-
-function AutomationConfig({ authFetch }) {
-  const [status, setStatus] = useState(null);
-  const [running, setRunning] = useState(false);
-  const [runResult, setRunResult] = useState(null);
-
-  async function load() {
-    const res = await authFetch('api/admin/automation');
-    const data = await res.json();
-    if (data.automation) setStatus(data.automation);
-  }
-  useEffect(() => {
-    load().catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function runNow() {
-    setRunning(true);
-    setRunResult(null);
-    try {
-      const res = await authFetch('api/admin/automation/run', { method: 'POST', body: '{}' });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.error || 'Run failed.');
-      const r = data.result || {};
-      setRunResult(r.skipped ? `Skipped (${r.skipped}).` : `Ran ${r.ran} listener(s); posted ${r.posted} new deal(s).`);
-      load();
-    } catch (err) {
-      setRunResult(err.message);
-    } finally {
-      setRunning(false);
-    }
-  }
-
-  return (
-    <>
-      <p className="subtitle">
-        Each listener posts on its <strong>own interval</strong> (set “Auto” + interval + count on the
-        listener above). A background checker wakes every ~5 minutes and runs only the listeners whose
-        interval is due — so a 30-min listener posts every 30 min, not every 5. Runs never overlap.
-      </p>
-      <div className="row">
-        <button className="secondary" onClick={runNow} disabled={running}>{running ? 'Running…' : 'Run all now'}</button>
-        {status && status.running && <span className="meta">a run is in progress…</span>}
-      </div>
-      {runResult && <p className="meta">{runResult}</p>}
-      {status && status.lastResult && status.lastResult.at && (
-        <p className="meta">Last run: {new Date(status.lastResult.at).toLocaleString()} — {status.lastResult.posted} posted.</p>
-      )}
     </>
   );
 }
@@ -1683,6 +1630,9 @@ function ListenerConfig({ authFetch, onNavigate }) {
   const [showAdd, setShowAdd] = useState(false);
   const [msgFor, setMsgFor] = useState(null); // { username, limit }
   const [mtLoggedIn, setMtLoggedIn] = useState(null);
+  const [autoStatus, setAutoStatus] = useState(null);
+  const [running, setRunning] = useState(false);
+  const [runResult, setRunResult] = useState(null);
 
   async function load() {
     const res = await authFetch('api/admin/listener');
@@ -1699,6 +1649,7 @@ function ListenerConfig({ authFetch, onNavigate }) {
   useEffect(() => {
     load().catch(() => {});
     loadMt();
+    authFetch('api/admin/automation').then(r => r.json()).then(d => { if (d.automation) setAutoStatus(d.automation); }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1710,6 +1661,22 @@ function ListenerConfig({ authFetch, onNavigate }) {
   async function saveAutomation(username, settings) {
     await authFetch('api/admin/listener/automation', { method: 'POST', body: JSON.stringify({ username, ...settings }) });
     load();
+  }
+  async function runNow() {
+    setRunning(true);
+    setRunResult(null);
+    try {
+      const res = await authFetch('api/admin/automation/run', { method: 'POST', body: '{}' });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Run failed.');
+      const r = data.result || {};
+      setRunResult(r.skipped ? `Skipped (${r.skipped}).` : `Ran ${r.ran} listener(s); posted ${r.posted} new deal(s).`);
+      authFetch('api/admin/automation').then(r2 => r2.json()).then(d => { if (d.automation) setAutoStatus(d.automation); }).catch(() => {});
+    } catch (err) {
+      setRunResult(err.message);
+    } finally {
+      setRunning(false);
+    }
   }
 
   return (
@@ -1741,6 +1708,21 @@ function ListenerConfig({ authFetch, onNavigate }) {
       <div className="row">
         <button className="secondary" onClick={() => setShowAdd(true)}>Add listener</button>
       </div>
+
+      <div className="sub-title" style={{ marginTop: 20 }}>Automation</div>
+      <p className="subtitle">
+        Each listener posts on its <strong>own interval</strong> (set "Auto" + interval + count on the
+        listener above). A background checker wakes every ~5 minutes and runs only the listeners whose
+        interval is due — so a 30-min listener posts every 30 min, not every 5. Runs never overlap.
+      </p>
+      <div className="row">
+        <button className="secondary" onClick={runNow} disabled={running}>{running ? 'Running…' : 'Run all now'}</button>
+        {autoStatus && autoStatus.running && <span className="meta">a run is in progress…</span>}
+      </div>
+      {runResult && <p className="meta">{runResult}</p>}
+      {autoStatus && autoStatus.lastResult && autoStatus.lastResult.at && (
+        <p className="meta">Last run: {new Date(autoStatus.lastResult.at).toLocaleString()} — {autoStatus.lastResult.posted} posted.</p>
+      )}
 
       {showAdd && (
         <AddListenerModal
