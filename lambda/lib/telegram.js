@@ -12,6 +12,10 @@ const TELEGRAM_KEY = 'telegram';
 const API_BASE = 'https://api.telegram.org';
 const TIMEOUT_MS = 10000;
 
+// Update types the webhook must receive. `callback_query` is required for the
+// price-tracker inline buttons; without it Telegram silently drops the presses.
+const ALLOWED_UPDATES = ['message', 'edited_message', 'channel_post', 'callback_query'];
+
 // ── Low-level Telegram Bot API call. Never logs the token or the request URL. ─
 async function tgCall(token, method, payload) {
   const controller = new AbortController();
@@ -43,8 +47,29 @@ async function tgCall(token, method, payload) {
 }
 
 const getMe = (token) => tgCall(token, 'getMe', {});
-const sendMessage = (token, chatId, text) =>
-  tgCall(token, 'sendMessage', { chat_id: chatId, text, disable_web_page_preview: false });
+const sendMessage = (token, chatId, text, extra) =>
+  tgCall(token, 'sendMessage', {
+    chat_id: chatId,
+    text,
+    disable_web_page_preview: false,
+    ...(extra || {}),
+  });
+
+// Publish the bot's command menu (the "/" autocomplete list). Best-effort — a
+// failure here must never block webhook setup.
+async function registerCommands(token) {
+  try {
+    await tgCall(token, 'setMyCommands', {
+      commands: [
+        { command: 'pricetracker', description: 'Track a product price / manage trackers' },
+        { command: 'my_trackers', description: 'View, edit, stop or delete your trackers' },
+        { command: 'help', description: 'How to use this bot' },
+      ],
+    });
+  } catch {
+    /* best-effort */
+  }
+}
 
 function isValidTokenFormat(token) {
   return typeof token === 'string' && /^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(token.trim());
@@ -82,10 +107,11 @@ async function connectBot(rawToken, webhookUrl) {
   await tgCall(token, 'setWebhook', {
     url: webhookUrl,
     secret_token: secret,
-    allowed_updates: ['message', 'channel_post'],
+    allowed_updates: ALLOWED_UPDATES,
     // Start clean — don't replay messages queued while the bot was disconnected.
     drop_pending_updates: true,
   });
+  await registerCommands(token);
 
   const existing = (await getConfig(TELEGRAM_KEY)) || {};
   const cfg = {
@@ -150,15 +176,39 @@ async function restoreBot(webhookUrl) {
     await tgCall(cfg.token, 'setWebhook', {
       url: webhookUrl,
       secret_token: secret,
-      allowed_updates: ['message', 'channel_post'],
+      allowed_updates: ALLOWED_UPDATES,
       drop_pending_updates: true,
     });
+    await registerCommands(cfg.token);
     cfg.webhookSecret = secret;
     cfg.webhookUrl = webhookUrl;
     await setConfig(TELEGRAM_KEY, cfg);
   } catch {
     /* best-effort */
   }
+}
+
+// Re-register the CURRENT bot's webhook without losing any stored config. Used by
+// the admin "Register bot" button to activate newly-added update permissions
+// (callback_query) on an already-connected bot. Channels and all other config are
+// preserved (they live in DynamoDB and are never touched here).
+async function reregisterBot(webhookUrl) {
+  const cfg = await getConfig(TELEGRAM_KEY);
+  if (!cfg || !cfg.token) throw new ApiError(400, 'Connect a bot first.');
+  const secret = cfg.webhookSecret || crypto.randomBytes(24).toString('hex');
+  await tgCall(cfg.token, 'deleteWebhook', { drop_pending_updates: false });
+  await tgCall(cfg.token, 'setWebhook', {
+    url: webhookUrl,
+    secret_token: secret,
+    allowed_updates: ALLOWED_UPDATES,
+    drop_pending_updates: false,
+  });
+  await registerCommands(cfg.token);
+  cfg.webhookSecret = secret;
+  cfg.webhookUrl = webhookUrl;
+  cfg.reregisteredAt = new Date().toISOString();
+  await setConfig(TELEGRAM_KEY, cfg);
+  return cfg;
 }
 
 // Send a test message to a chat/channel id using the stored bot.
@@ -283,7 +333,10 @@ const HELP_TEXT =
   'Send me an Amazon or Flipkart product link and I will reply with an affiliate link.\n\n' +
   '• Amazon — amazon.in, amazon.com, a.co, amzn.to …\n' +
   '• Flipkart — flipkart.com, dl.flipkart.com, fkrt.it …\n\n' +
-  'Commands:\n/start — welcome\n/help — this message';
+  'Commands:\n' +
+  '/pricetracker — track a product price (alerts you when it drops)\n' +
+  '/my_trackers — view, edit, stop or delete your trackers\n' +
+  '/start — welcome\n/help — this message';
 
 // Process one Telegram update. Never throws (webhook must always 200) and never
 // leaks the token.
@@ -300,6 +353,16 @@ async function processUpdate(update) {
           detectedAt: new Date().toISOString(),
         };
         await setConfig(TELEGRAM_KEY, cfg);
+      }
+      return;
+    }
+
+    // Inline button presses (price-tracker UI).
+    if (update && update.callback_query) {
+      const cfg = await getConfig(TELEGRAM_KEY);
+      if (cfg && cfg.token) {
+        // eslint-disable-next-line global-require
+        await require('./pricebot').handleCallback(cfg.token, update.callback_query);
       }
       return;
     }
@@ -328,6 +391,26 @@ async function processUpdate(update) {
       return;
     }
 
+    // ── Price tracker: commands + mid-flow conversation state ──
+    // Lazy-require to avoid a module cycle (pricebot requires telegram).
+    // eslint-disable-next-line global-require
+    const pricebot = require('./pricebot');
+    if (text === '/cancel' || text.startsWith('/cancel')) {
+      await pricebot.handleCancel(token, chatId);
+      return;
+    }
+    if (text.startsWith('/pricetracker') || text.startsWith('/price_tracker')) {
+      await pricebot.startTrackerFlow(token, chatId, msg.from, text.replace(/^\/price_?tracker(?:@\S+)?\s*/, ''));
+      return;
+    }
+    if (text.startsWith('/my_trackers')) {
+      await pricebot.showMyTrackers(token, chatId, msg.from);
+      return;
+    }
+    // If the user is mid-flow (awaiting a product URL), route this message there
+    // instead of treating it as a one-off affiliate-link conversion.
+    if (await pricebot.maybeHandleState(token, chatId, msg.from, text)) return;
+
     const url = extractUrl(text);
     if (!url) {
       // Doubles as the setup round-trip confirmation.
@@ -354,11 +437,14 @@ async function processUpdate(update) {
 
 module.exports = {
   TELEGRAM_KEY,
+  tgCall,
+  sendMessage,
   connectBot,
   confirmBot,
   removeBot,
   silenceBot,
   restoreBot,
+  reregisterBot,
   sendTest,
   addChannel,
   removeChannel,

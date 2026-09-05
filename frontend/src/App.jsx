@@ -30,6 +30,7 @@ const IC = {
   menu: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 6h16M4 12h16M4 18h16" strokeLinecap="round"/></svg>,
   key: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="8" cy="8" r="4"/><path d="m11 11 8 8m-3-3 2-2m-4 0 2-2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
   users: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0M16 6a3 3 0 0 1 0 6m2 8a6 6 0 0 0-3-5.2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+  code: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m8 8-4 4 4 4m8-8 4 4-4 4m-2-11-4 14" strokeLinecap="round" strokeLinejoin="round"/></svg>,
 };
 
 // Admin login persists across browser/app restarts (localStorage), so the
@@ -469,6 +470,8 @@ function AdminPanel({ token, onUnauthorized, onLogout, onHome }) {
     ['automation', 'Automation', IC.clock],
     ['broadcasts', 'Custom messages', IC.mega],
     ['import-users', 'Import users', IC.users],
+    ['price-tracker', 'Price Tracker', IC.tag],
+    ['ai-dev', 'AI Developer', IC.code],
     ['audit', 'Audit log', IC.list],
   ];
   const titles = Object.fromEntries(nav.map(([id, label]) => [id, label]));
@@ -482,6 +485,8 @@ function AdminPanel({ token, onUnauthorized, onLogout, onHome }) {
       case 'automation': return <AutomationConfig authFetch={authFetch} />;
       case 'broadcasts': return <BroadcastConfig authFetch={authFetch} />;
       case 'import-users': return <ImportUsers authFetch={authFetch} onNavigate={go} />;
+      case 'price-tracker': return <PriceTrackerConfig authFetch={authFetch} />;
+      case 'ai-dev': return <AIDevConfig authFetch={authFetch} />;
       case 'audit': return <AuditConfig authFetch={authFetch} />;
       default: return null;
     }
@@ -646,11 +651,24 @@ function BroadcastConfig({ authFetch }) {
   );
 }
 
+// Friendly tab labels per audit `type`, in display order. Types not listed here
+// still get a tab (auto-appended) so nothing is ever hidden.
+const AUDIT_TABS = [
+  ['bot', 'Bot links'],
+  ['website', 'Website links'],
+  ['price', 'Price tracker'],
+  ['cron', 'Listener cron'],
+  ['ingest', 'Real-time'],
+  ['mtproto', 'Import users'],
+  ['broadcast', 'Broadcasts'],
+];
+
 function AuditConfig({ authFetch }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState(null);
   const [query, setQuery] = useState('');
+  const [tab, setTab] = useState('all');
 
   async function load() {
     setLoading(true);
@@ -662,16 +680,32 @@ function AuditConfig({ authFetch }) {
   }
   useEffect(() => { load().catch(() => setLoading(false)); /* eslint-disable-next-line */ }, []);
 
+  // Count per type + build the visible tab list (known order first, then extras).
+  const byType = {};
+  items.forEach((a) => { const t = a.type || 'other'; byType[t] = (byType[t] || 0) + 1; });
+  const known = AUDIT_TABS.filter(([t]) => byType[t]);
+  const extras = Object.keys(byType)
+    .filter((t) => !AUDIT_TABS.some(([x]) => x === t))
+    .map((t) => [t, t]);
+  const visibleTabs = [...known, ...extras];
+
   const q = query.trim().toLowerCase();
+  const byTab = tab === 'all' ? items : items.filter((a) => (a.type || 'other') === tab);
   const shown = q
-    ? items.filter((a) =>
+    ? byTab.filter((a) =>
         `${a.type || ''} ${a.message || ''} ${a.detail || ''}`.toLowerCase().includes(q))
-    : items;
+    : byTab;
 
   return (
     <>
-      <p className="subtitle">Recent activity (kept 2 days). Rows with a ▸ can be expanded to see the full flow — which links were found, how each converted, and whether it posted (and why not).</p>
-      <div className="row" style={{ marginTop: 0, gap: 8 }}>
+      <p className="subtitle">Recent activity (kept 2 days). Pick a category tab, or search across all. Rows with a ▸ expand to show the full flow — which links were found, how each converted, and whether it posted (and why not).</p>
+      <div className="row" style={{ marginTop: 0, gap: 6, flexWrap: 'wrap' }}>
+        <button className={tab === 'all' ? '' : 'secondary'} onClick={() => setTab('all')}>All ({items.length})</button>
+        {visibleTabs.map(([t, label]) => (
+          <button key={t} className={tab === t ? '' : 'secondary'} onClick={() => setTab(t)}>{label} ({byType[t]})</button>
+        ))}
+      </div>
+      <div className="row" style={{ marginTop: 8, gap: 8 }}>
         <input
           type="text"
           className="audit-search"
@@ -683,8 +717,10 @@ function AuditConfig({ authFetch }) {
         <button className="secondary" onClick={load} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
       </div>
       {!loading && items.length === 0 && <p className="meta">No activity yet.</p>}
-      {!loading && items.length > 0 && shown.length === 0 && <p className="meta">No logs match “{query}”.</p>}
-      {q && shown.length > 0 && <p className="meta">{shown.length} of {items.length} logs match.</p>}
+      {!loading && items.length > 0 && shown.length === 0 && (
+        <p className="meta">No logs {tab === 'all' ? '' : 'in this tab '}match{q ? ` “${query}”` : ''}.</p>
+      )}
+      {(q || tab !== 'all') && shown.length > 0 && <p className="meta">Showing {shown.length} log(s).</p>}
       {shown.map((a, i) => {
         const id = a.at ? `${a.at}#${i}` : String(i);
         const hasDetail = !!a.detail;
@@ -752,6 +788,228 @@ function AutomationConfig({ authFetch }) {
       {status && status.lastResult && status.lastResult.at && (
         <p className="meta">Last run: {new Date(status.lastResult.at).toLocaleString()} — {status.lastResult.posted} posted.</p>
       )}
+    </>
+  );
+}
+
+function PriceTrackerConfig({ authFetch }) {
+  const [cfg, setCfg] = useState(null);
+  const [counts, setCounts] = useState(null);
+  const [hours, setHours] = useState(6);
+  const [enabled, setEnabled] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  async function load() {
+    const res = await authFetch('api/admin/price-tracker');
+    const data = await res.json();
+    if (data.config) {
+      setCfg(data.config);
+      setEnabled(!!data.config.enabled);
+      setHours(data.config.intervalHours || 6);
+    }
+    if (data.counts) setCounts(data.counts);
+  }
+  useEffect(() => { load().catch(() => {}); /* eslint-disable-next-line */ }, []);
+
+  async function save() {
+    setSaving(true); setMsg('');
+    try {
+      const res = await authFetch('api/admin/price-tracker/save', {
+        method: 'POST',
+        body: JSON.stringify({ enabled, intervalHours: Number(hours) }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Save failed.');
+      setCfg(data.config);
+      setMsg('Saved ✓');
+      load();
+    } catch (err) {
+      setMsg(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <p className="subtitle">
+        Users track product prices from the bot (<code>/pricetracker</code>). This controls how often the
+        background job re-checks every tracked product and sends drop alerts.
+      </p>
+      {counts && (
+        <div className="statusbox">
+          <div className="meta">
+            Trackers: <strong>{counts.total}</strong> total · {counts.active} active · {counts.paused} paused
+          </div>
+          {cfg && cfg.lastRunAt && (
+            <div className="meta">Last full check: {new Date(cfg.lastRunAt).toLocaleString()}</div>
+          )}
+        </div>
+      )}
+      <div style={{ marginTop: 12 }}>
+        <Toggle checked={enabled} onChange={setEnabled} label="Enable price checks" />
+      </div>
+      <label style={{ marginTop: 12, display: 'block' }}>Check every</label>
+      <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 4 }}>
+        <input
+          className="num"
+          type="number"
+          min="1"
+          max="168"
+          value={hours}
+          disabled={!enabled}
+          onChange={(e) => setHours(e.target.value)}
+          style={{ width: 90 }}
+        />
+        <span className="meta">hours (1–168)</span>
+      </div>
+      <div className="row" style={{ marginTop: 12 }}>
+        <button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+        {msg && <span className="meta">{msg}</span>}
+      </div>
+      <p className="meta" style={{ marginTop: 12 }}>
+        Checks run on the existing 5-minute background job; the first tick after the interval elapses runs a
+        full sweep. Amazon/Flipkart occasionally block price reads — those are skipped and retried next sweep.
+      </p>
+    </>
+  );
+}
+
+const AIDEV_STATUS = {
+  queued: ['Queued', 'badge'],
+  running: ['Working…', 'badge'],
+  ready: ['Ready ✓', 'badge ok'],
+  failed: ['Failed ✗', 'badge off'],
+  deploying: ['Deploying…', 'badge'],
+  deployed: ['Deployed ✓', 'badge ok'],
+  'deploy-failed': ['Deploy failed ✗', 'badge off'],
+  discarded: ['Discarded', 'badge'],
+};
+
+function AIDevConfig({ authFetch }) {
+  const [cfg, setCfg] = useState(null);
+  const [tasks, setTasks] = useState([]);
+  const [pat, setPat] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  async function load() {
+    const res = await authFetch('api/admin/ai-dev');
+    const data = await res.json();
+    if (data.config) setCfg(data.config);
+    if (data.tasks) setTasks(data.tasks);
+  }
+  useEffect(() => { load().catch(() => {}); /* eslint-disable-next-line */ }, []);
+
+  // Poll while anything is in flight so status updates without manual refresh.
+  const active = tasks.some((t) => ['queued', 'running', 'deploying'].includes(t.status));
+  useEffect(() => {
+    if (!active) return undefined;
+    const h = setInterval(() => load().catch(() => {}), 8000);
+    return () => clearInterval(h);
+    // eslint-disable-next-line
+  }, [active]);
+
+  async function savePat() {
+    if (!pat.trim()) return;
+    setBusy(true); setMsg('');
+    try {
+      const res = await authFetch('api/admin/ai-dev/config', { method: 'POST', body: JSON.stringify({ pat: pat.trim() }) });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Could not save.');
+      setPat(''); setCfg(data.config); setMsg('GitHub connected ✓'); load();
+    } catch (err) { setMsg(err.message); } finally { setBusy(false); }
+  }
+
+  async function send() {
+    if (!prompt.trim()) return;
+    setBusy(true); setMsg('');
+    try {
+      const res = await authFetch('api/admin/ai-dev/tasks', { method: 'POST', body: JSON.stringify({ prompt: prompt.trim() }) });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Could not start the task.');
+      setPrompt(''); setMsg('Sent to AI — it will implement this on a branch.'); load();
+    } catch (err) { setMsg(err.message); } finally { setBusy(false); }
+  }
+
+  async function act(id, kind) {
+    const verb = kind === 'deploy' ? 'Deploy this change to production now?' : 'Discard this change and delete its branch?';
+    if (!window.confirm(verb)) return;
+    setBusy(true); setMsg('');
+    try {
+      const res = await authFetch(`api/admin/ai-dev/tasks/${kind}`, { method: 'POST', body: JSON.stringify({ id }) });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Action failed.');
+      load();
+    } catch (err) { setMsg(err.message); } finally { setBusy(false); }
+  }
+
+  const configured = cfg && cfg.configured;
+
+  return (
+    <>
+      <p className="subtitle">
+        Describe a change in plain English. An AI coding agent implements it on a separate branch, runs the
+        tests/build, and shows the result here. Nothing reaches production until you tap <strong>Deploy</strong>.
+      </p>
+
+      {!configured ? (
+        <>
+          <label>GitHub token</label>
+          <p className="meta">A fine-grained token for <code>{(cfg && cfg.repo) || 'DealVerse'}</code> with Contents + Actions read/write. Stored securely on the server.</p>
+          <div className="row" style={{ gap: 8 }}>
+            <input type="password" value={pat} onChange={(e) => setPat(e.target.value)} placeholder="github_pat_…" style={{ flex: 1, minWidth: 220 }} />
+            <button onClick={savePat} disabled={busy || !pat.trim()}>Connect</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="statusbox">
+            <div className="meta">Repo: <strong>{cfg.owner}/{cfg.repo}</strong> · GitHub connected ✓</div>
+          </div>
+
+          <label style={{ marginTop: 12, display: 'block' }}>What should the AI change?</label>
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="e.g. Add a Refresh button beside the Search button on the audit log"
+            rows={3}
+            style={{ width: '100%', resize: 'vertical', fontFamily: 'inherit', fontSize: '0.95rem', padding: 8 }}
+          />
+          <div className="row" style={{ gap: 8 }}>
+            <button onClick={send} disabled={busy || !prompt.trim()}>Send to AI</button>
+            <button className="secondary" onClick={() => load().catch(() => {})} disabled={busy}>Refresh</button>
+          </div>
+        </>
+      )}
+      {msg && <p className="meta">{msg}</p>}
+
+      {configured && tasks.length === 0 && <p className="meta">No AI tasks yet.</p>}
+      {tasks.map((t) => {
+        const [label, cls] = AIDEV_STATUS[t.status] || ['—', 'badge'];
+        return (
+          <div key={t.id} className="listrow" style={{ alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <span style={{ flex: 1, minWidth: 200 }}>
+              <span className={cls}>{label}</span>{' '}
+              {t.prompt}
+              <div className="meta">
+                {t.branch}
+                {' · '}<a href={t.diffUrl} target="_blank" rel="noreferrer">view diff</a>
+                {t.developUrl && <> · <a href={t.developUrl} target="_blank" rel="noreferrer">run log</a></>}
+                {t.deployUrl && <> · <a href={t.deployUrl} target="_blank" rel="noreferrer">deploy log</a></>}
+              </div>
+            </span>
+            <span className="rowactions">
+              {t.status === 'ready' && <button onClick={() => act(t.id, 'deploy')} disabled={busy}>Deploy</button>}
+              {!['discarded', 'deployed', 'deploying'].includes(t.status) && (
+                <button className="link" onClick={() => act(t.id, 'discard')} disabled={busy}>Discard</button>
+              )}
+            </span>
+          </div>
+        );
+      })}
     </>
   );
 }
@@ -1081,6 +1339,20 @@ function TelegramConfig({ authFetch }) {
     await authFetch('api/admin/telegram/remove', { method: 'POST', body: '{}' });
     load();
   }
+  const [reReg, setReReg] = useState(false);
+  async function reregister() {
+    if (!confirm('Re-register the bot? Channels and all settings are kept — this just refreshes Telegram permissions (needed for Price Tracker buttons).')) return;
+    setReReg(true);
+    try {
+      const res = await authFetch('api/admin/telegram/reregister', { method: 'POST', body: '{}' });
+      const data = await res.json();
+      if (!data.success) alert(data.error || 'Could not re-register the bot.');
+      else alert('Bot re-registered ✓ — inline buttons are now active.');
+      load();
+    } finally {
+      setReReg(false);
+    }
+  }
   async function removeChannel(id) {
     if (!window.confirm('Remove this channel from the bot? The bot will stop posting to it.')) return;
     await authFetch('api/admin/telegram/channel/remove', { method: 'POST', body: JSON.stringify({ id }) });
@@ -1145,8 +1417,12 @@ function TelegramConfig({ authFetch }) {
               })}
               <div className="row">
                 <button className="secondary" onClick={() => setShowChannelModal(true)}>Add channel</button>
+                <button className="secondary" onClick={reregister} disabled={reReg}>{reReg ? 'Re-registering…' : 'Re-register bot'}</button>
                 <button className="link" onClick={removeBot}>Remove bot</button>
               </div>
+              <p className="meta" style={{ marginTop: 4 }}>
+                “Re-register bot” refreshes the webhook so inline buttons (Price Tracker) work. Safe — channels &amp; settings are preserved.
+              </p>
             </>
           )}
         </>

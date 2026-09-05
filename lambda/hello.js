@@ -26,6 +26,7 @@ const {
   removeBot,
   silenceBot,
   restoreBot,
+  reregisterBot,
   sendTest,
   addChannel,
   removeChannel,
@@ -57,6 +58,8 @@ const {
   setListenerAutomation,
 } = require('./lib/listener');
 const { getAutomation, maskAutomation, runAutomation } = require('./lib/automation');
+const priceTracker = require('./lib/pricetracker');
+const aidev = require('./lib/aidev');
 // MTProto (beta). This module is dependency-free at load time — GramJS is
 // lazy-required INSIDE its functions — so requiring it here can never affect
 // existing routes or the automation tick, even if GramJS is not installed.
@@ -209,7 +212,9 @@ exports.handler = async (event) => {
           const bc = await runBroadcasts();
           let imp = null;
           try { imp = await mtproto.runImportAuto(); } catch (e) { imp = { error: e.message }; }
-          summary.push({ tenant: m.id, auto, broadcasts: bc, importAuto: imp });
+          let prices = null;
+          try { prices = await priceTracker.checkAll(cronDeadline); } catch (e) { prices = { error: e.message }; }
+          summary.push({ tenant: m.id, auto, broadcasts: bc, importAuto: imp, prices });
         } catch (err) {
           console.error('cron tenant error', m.id, err && err.stack ? err.stack : err);
           summary.push({ tenant: m.id, error: err.message });
@@ -291,7 +296,7 @@ exports.handler = async (event) => {
       // Best-effort external cleanup before wiping data.
       try { await removeBot(); } catch { /* ignore */ }
       try { await mtproto.clearCredentials(); } catch { /* ignore */ }
-      for (const key of ['amazon', 'sitestripe', 'flipkart', 'telegram', 'listeners', 'automation', 'broadcasts', 'mtproto', 'import_pool', 'importauto', 'ingest_seen']) {
+      for (const key of ['amazon', 'sitestripe', 'flipkart', 'telegram', 'listeners', 'automation', 'broadcasts', 'mtproto', 'import_pool', 'importauto', 'ingest_seen', 'pricetrackers', 'pricetracker_config']) {
         try { await deleteConfig(key); } catch { /* ignore */ }
       }
       await purgeTenant(id);
@@ -483,6 +488,60 @@ exports.handler = async (event) => {
       const { id, active } = parseBody(event);
       const cfg = await setChannelActive(id, active);
       return respond(200, { success: true, telegram: maskTelegram(cfg) });
+    }
+
+    // ── Admin: re-register the bot webhook (refresh permissions) (protected) ─
+    if (method === 'POST' && reqPath.endsWith('/api/admin/telegram/reregister')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const tid = getTenant();
+      const suffix = tid === DEFAULT_TENANT ? '' : `/${tid}`;
+      const webhookUrl = `${selfBaseUrl(event).replace(/\/+$/, '')}/telegram/webhook${suffix}`;
+      const cfg = await reregisterBot(webhookUrl);
+      return respond(200, { success: true, telegram: maskTelegram(cfg) });
+    }
+
+    // ── Admin: price tracker config (protected) ───────────────────────────
+    if (method === 'GET' && reqPath.endsWith('/api/admin/price-tracker')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const [config, cnt] = await Promise.all([priceTracker.getPtConfig(), priceTracker.counts()]);
+      return respond(200, { success: true, config, counts: cnt });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/price-tracker/save')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { enabled, intervalHours } = parseBody(event);
+      const config = await priceTracker.setPtConfig({ enabled, intervalHours });
+      return respond(200, { success: true, config });
+    }
+
+    // ── Admin: AI Developer (protected) ───────────────────────────────────
+    if (method === 'GET' && reqPath.endsWith('/api/admin/ai-dev')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const data = await aidev.listTasks();
+      return respond(200, { success: true, ...data });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/ai-dev/config')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { pat, owner, repo } = parseBody(event);
+      const config = await aidev.setPat({ pat, owner, repo });
+      return respond(200, { success: true, config });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/ai-dev/tasks/deploy')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { id } = parseBody(event);
+      const task = await aidev.deployTask(id);
+      return respond(200, { success: true, task });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/ai-dev/tasks/discard')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { id } = parseBody(event);
+      const task = await aidev.discardTask(id);
+      return respond(200, { success: true, task });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/ai-dev/tasks')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { prompt } = parseBody(event);
+      const task = await aidev.createTask(prompt);
+      return respond(200, { success: true, task });
     }
 
     // ── Admin: audit log (protected) ──────────────────────────────────────

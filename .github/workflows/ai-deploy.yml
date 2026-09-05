@@ -1,0 +1,59 @@
+name: AI Deploy
+
+# Triggered by the admin panel "Deploy" button. Deploys an approved ai/* branch to
+# production with cdk deploy, then merges it into main (so main == prod) and deletes
+# the branch. Uses a dedicated, scoped AWS identity (see repo secrets).
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: AI branch to deploy
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ai-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix frontend ci
+
+      - name: Deploy (fe build + lambda package + cdk deploy)
+        run: npm run deploy
+
+      - name: Merge to main and delete branch
+        run: |
+          git config user.name "DealVerse AI"
+          git config user.email "ai@dealverse.local"
+          git fetch origin main "${{ inputs.branch }}"
+          git checkout -B main origin/main
+          git merge --no-ff "origin/${{ inputs.branch }}" -m "AI deploy: merge ${{ inputs.branch }}"
+          git push origin main
+          git push origin --delete "${{ inputs.branch }}" || true

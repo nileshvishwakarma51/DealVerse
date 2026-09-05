@@ -9,6 +9,7 @@
     "watch": "tsc -w",
     "cdk": "cdk",
     "synth": "cdk synth",
+    "test": "node --test test/price.test.js test/pricetracker.test.js",
     "fe:install": "npm --prefix frontend install",
     "fe:build": "npm --prefix frontend run build && node scripts/copy-fe.js",
     "lambda:install": "node scripts/package-lambda.js",

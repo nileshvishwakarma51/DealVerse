@@ -1,0 +1,109 @@
+name: AI Develop
+
+# Triggered by the DealVerse admin panel (via the GitHub API). An AI agent
+# (OpenCode) implements the requested change on a throwaway ai/* branch, which is
+# gated by the protected-path guard + tests/build/synth. Production is NOT touched
+# here — that only happens in ai-deploy.yml when the admin taps Deploy.
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: The change to implement
+        required: true
+      branch:
+        description: AI branch to create
+        required: true
+      task_id:
+        description: Admin task id (for traceability)
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ai-develop
+  cancel-in-progress: false
+
+jobs:
+  develop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Create AI branch
+        run: |
+          git config user.name "DealVerse AI"
+          git config user.email "ai@dealverse.local"
+          git checkout -b "${{ inputs.branch }}"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix frontend ci
+
+      - name: Install OpenCode
+        run: |
+          curl -fsSL https://opencode.ai/install | bash
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      - name: Configure OpenCode auth
+        env:
+          OPENCODE_AUTH: ${{ secrets.OPENCODE_AUTH }}
+        run: |
+          # Reuse the same free OpenCode Zen login the user has on their laptop by
+          # writing the exported auth.json. (Some setups instead use OPENCODE_API_KEY
+          # as an env var — that is also honoured in the run step below.)
+          if [ -n "$OPENCODE_AUTH" ]; then
+            mkdir -p "$HOME/.local/share/opencode"
+            printf '%s' "$OPENCODE_AUTH" > "$HOME/.local/share/opencode/auth.json"
+          fi
+
+      - name: Run OpenCode
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL }}
+          PROMPT: ${{ inputs.prompt }}
+        run: |
+          GUARD='You are editing the DealVerse repository. Implement ONLY the change described below. Rules: keep edits minimal and focused; you may ONLY modify files under frontend/src, frontend/public, or lambda/ (never lib/, bin/, cdk.json, .github/, or any package.json/lockfile); do not add npm dependencies; do not run destructive or network commands; match the existing code style. Change request: '
+          MSG="${GUARD}${PROMPT}"
+          if [ -n "$OPENCODE_MODEL" ]; then
+            opencode run --model "$OPENCODE_MODEL" "$MSG"
+          else
+            opencode run "$MSG"
+          fi
+
+      - name: Guard protected paths
+        run: |
+          CHANGED=$(git status --porcelain | sed 's/^...//')
+          echo "Changed files:"; echo "$CHANGED"
+          if [ -z "$CHANGED" ]; then
+            echo "::error::The AI produced no changes."; exit 1
+          fi
+          if echo "$CHANGED" | grep -Eq '^(lib/|bin/|cdk\.json|cdk\.context\.json|package\.json|package-lock\.json|\.github/|frontend/package\.json|frontend/package-lock\.json|lambda/package\.json|lambda/package-lock\.json)'; then
+            echo "::error::The AI tried to modify protected infra/dependency files. Aborting — nothing committed."; exit 1
+          fi
+
+      - name: Tests, build, synth
+        run: |
+          npm test
+          npm run fe:build
+          npx cdk synth --quiet
+
+      - name: Commit and push branch
+        env:
+          PROMPT: ${{ inputs.prompt }}
+        run: |
+          git add -A
+          git commit -m "AI: ${PROMPT}"
+          git push origin "${{ inputs.branch }}"
