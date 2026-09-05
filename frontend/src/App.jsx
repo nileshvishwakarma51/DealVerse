@@ -501,7 +501,7 @@ function AdminPanel({ token, onUnauthorized, onLogout, onHome }) {
         </div>
         <nav className="side-nav">
           {nav.map(([id, label, icon]) => (
-            <a key={id} className={active === id ? 'on' : ''} onClick={() => go(id)} style={id === 'price-tracker' ? { color: 'red' } : undefined}>
+            <a key={id} className={active === id ? 'on' : ''} onClick={() => go(id)}>
               {icon}<span>{label}</span>
             </a>
           ))}
