@@ -1002,7 +1002,9 @@ function AIDevConfig({ authFetch }) {
               </div>
             </span>
             <span className="rowactions">
-              {t.status === 'ready' && <button onClick={() => act(t.id, 'deploy')} disabled={busy}>Deploy</button>}
+              {(t.status === 'ready' || t.status === 'deploy-failed') && (
+                <button onClick={() => act(t.id, 'deploy')} disabled={busy}>{t.status === 'deploy-failed' ? 'Retry deploy' : 'Deploy'}</button>
+              )}
               {!['discarded', 'deployed', 'deploying'].includes(t.status) && (
                 <button className="link" onClick={() => act(t.id, 'discard')} disabled={busy}>Discard</button>
               )}
