@@ -12,6 +12,10 @@
 // your local .env / .session file. Nothing sensitive is printed to the console.
 
 require('dotenv').config();
+// GramJS reattaches a socket 'data' listener on each (re)connect; over a long-
+// running session across reconnects this can trip Node's default 10-listener
+// warning. 20 is safe headroom (the monitor below already prevents real leaks).
+require('events').EventEmitter.defaultMaxListeners = 20;
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -207,7 +211,10 @@ async function main() {
   }
 
   const client = new TelegramClient(new StringSession(session || ''), apiId, apiHash, {
-    connectionRetries: 5,
+    // Phone networks flap; let GramJS keep retrying on its own instead of us
+    // hammering connect() (which stacks socket listeners → the memory-leak warning).
+    connectionRetries: 1000000,
+    retryDelay: 2000,
     autoReconnect: true,
   });
   try { client.setLogLevel('none'); } catch { /* ignore */ }
@@ -350,23 +357,36 @@ async function main() {
   log(`Listener started ✓  Watching ${chatMap.size} source(s). Keep this window open. Ctrl+C to stop.`);
   pushEvent({ type: 'log', text: `Listener started ✓ — watching ${chatMap.size} source(s)` });
 
-  // Visibility + safety net for dropped connections (GramJS also auto-reconnects).
+  // Connection monitor. GramJS reconnects itself (autoReconnect) — this loop only
+  // (a) reflects the live state on the dashboard, and (b) as a LAST resort forces
+  // one reconnect if we've stayed down for a while, never overlapping. This avoids
+  // the old bug where a blind connect() every 30s fought GramJS's own reconnect and
+  // stacked socket listeners (MaxListenersExceededWarning).
+  let downSince = 0;
+  let reconnecting = false;
   setInterval(async () => {
-    try {
-      if (!client.connected) {
-        status.connected = false; broadcastStatus();
-        log('⚠ connection dropped — reconnecting…');
-        pushEvent({ type: 'error', text: 'connection dropped — reconnecting…' });
-        await client.connect();
-        status.connected = true; broadcastStatus();
-        log('reconnected ✓');
-        pushEvent({ type: 'log', text: 'reconnected ✓' });
-      }
-    } catch (e) {
-      log('reconnect attempt failed:', (e && e.message) || e);
-      pushEvent({ type: 'error', text: 'reconnect failed: ' + ((e && e.message) || e) });
+    const up = !!client.connected;
+    if (up) {
+      if (!status.connected) { status.connected = true; broadcastStatus(); log('reconnected ✓'); pushEvent({ type: 'log', text: 'reconnected ✓' }); }
+      downSince = 0;
+      return;
     }
-  }, 30000);
+    // Down:
+    if (status.connected) { status.connected = false; broadcastStatus(); log('⚠ connection down — GramJS is reconnecting…'); pushEvent({ type: 'error', text: 'connection down — reconnecting…' }); }
+    if (!downSince) downSince = Date.now();
+    // Give GramJS ~90s to self-heal before we intervene, and never run two at once.
+    if (reconnecting || Date.now() - downSince < 90000) return;
+    reconnecting = true;
+    try {
+      log('⚠ still down after 90s — forcing one reconnect…');
+      await client.connect();
+    } catch (e) {
+      log('forced reconnect failed:', (e && e.message) || e);
+    } finally {
+      reconnecting = false;
+      if (client.connected) downSince = 0;
+    }
+  }, 15000);
 }
 
 // Exit on any unrecoverable error so the process manager (pm2 / Docker
