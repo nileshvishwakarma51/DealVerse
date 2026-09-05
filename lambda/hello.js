@@ -59,6 +59,7 @@ const {
 } = require('./lib/listener');
 const { getAutomation, maskAutomation, runAutomation } = require('./lib/automation');
 const priceTracker = require('./lib/pricetracker');
+const priceChange = require('./lib/pricechange');
 const aidev = require('./lib/aidev');
 // MTProto (beta). This module is dependency-free at load time — GramJS is
 // lazy-required INSIDE its functions — so requiring it here can never affect
@@ -214,7 +215,9 @@ exports.handler = async (event) => {
           try { imp = await mtproto.runImportAuto(); } catch (e) { imp = { error: e.message }; }
           let prices = null;
           try { prices = await priceTracker.checkAll(cronDeadline); } catch (e) { prices = { error: e.message }; }
-          summary.push({ tenant: m.id, auto, broadcasts: bc, importAuto: imp, prices });
+          let priceChanges = null;
+          try { priceChanges = await priceChange.runDailyCheck(cronDeadline); } catch (e) { priceChanges = { error: e.message }; }
+          summary.push({ tenant: m.id, auto, broadcasts: bc, importAuto: imp, prices, priceChanges });
         } catch (err) {
           console.error('cron tenant error', m.id, err && err.stack ? err.stack : err);
           summary.push({ tenant: m.id, error: err.message });
@@ -296,7 +299,7 @@ exports.handler = async (event) => {
       // Best-effort external cleanup before wiping data.
       try { await removeBot(); } catch { /* ignore */ }
       try { await mtproto.clearCredentials(); } catch { /* ignore */ }
-      for (const key of ['amazon', 'sitestripe', 'flipkart', 'telegram', 'listeners', 'automation', 'broadcasts', 'mtproto', 'import_pool', 'importauto', 'ingest_seen', 'pricetrackers', 'pricetracker_config']) {
+      for (const key of ['amazon', 'sitestripe', 'flipkart', 'telegram', 'listeners', 'automation', 'broadcasts', 'mtproto', 'import_pool', 'importauto', 'ingest_seen', 'pricetrackers', 'pricetracker_config', 'pricechange', 'pricechange_config']) {
         try { await deleteConfig(key); } catch { /* ignore */ }
       }
       await purgeTenant(id);
@@ -510,6 +513,19 @@ exports.handler = async (event) => {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
       const { enabled, intervalHours } = parseBody(event);
       const config = await priceTracker.setPtConfig({ enabled, intervalHours });
+      return respond(200, { success: true, config });
+    }
+
+    // ── Admin: price-change tracker config (protected) ────────────────────
+    if (method === 'GET' && reqPath.endsWith('/api/admin/price-change')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const [config, cnt] = await Promise.all([priceChange.getPCConfig(), priceChange.counts()]);
+      return respond(200, { success: true, config, counts: cnt });
+    }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/price-change/save')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { enabled, maxPerDay, ttlDays } = parseBody(event);
+      const config = await priceChange.setPCConfig({ enabled, maxPerDay, ttlDays });
       return respond(200, { success: true, config });
     }
 

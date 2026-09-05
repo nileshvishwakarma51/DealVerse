@@ -31,6 +31,7 @@ const IC = {
   key: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="8" cy="8" r="4"/><path d="m11 11 8 8m-3-3 2-2m-4 0 2-2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
   users: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0M16 6a3 3 0 0 1 0 6m2 8a6 6 0 0 0-3-5.2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
   code: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m8 8-4 4 4 4m8-8 4 4-4 4m-2-11-4 14" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+  trend: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m3 17 6-6 4 4 8-8" strokeLinecap="round" strokeLinejoin="round"/><path d="M15 7h6v6" strokeLinecap="round" strokeLinejoin="round"/></svg>,
 };
 
 // Admin login persists across browser/app restarts (localStorage), so the
@@ -470,6 +471,7 @@ function AdminPanel({ token, onUnauthorized, onLogout, onHome }) {
     ['broadcasts', 'Custom messages', IC.mega],
     ['import-users', 'Import users', IC.users],
     ['price-tracker', 'Price Tracker', IC.tag],
+    ['price-change', 'Price-change tracker', IC.trend],
     ['ai-dev', 'AI Developer', IC.code],
     ['audit', 'Audit log', IC.list],
   ];
@@ -484,6 +486,7 @@ function AdminPanel({ token, onUnauthorized, onLogout, onHome }) {
       case 'broadcasts': return <BroadcastConfig authFetch={authFetch} />;
       case 'import-users': return <ImportUsers authFetch={authFetch} onNavigate={go} />;
       case 'price-tracker': return <PriceTrackerConfig authFetch={authFetch} />;
+      case 'price-change': return <PriceChangeConfig authFetch={authFetch} />;
       case 'ai-dev': return <AIDevConfig authFetch={authFetch} />;
       case 'audit': return <AuditConfig authFetch={authFetch} />;
       default: return null;
@@ -655,6 +658,7 @@ const AUDIT_TABS = [
   ['bot', 'Bot links'],
   ['website', 'Website links'],
   ['price', 'Price tracker'],
+  ['pricechange', 'Price-change tracker'],
   ['cron', 'Listener cron'],
   ['ingest', 'Real-time'],
   ['mtproto', 'Import users'],
@@ -818,6 +822,110 @@ function PriceTrackerConfig({ authFetch }) {
       <p className="meta" style={{ marginTop: 12 }}>
         Checks run on the existing 5-minute background job; the first tick after the interval elapses runs a
         full sweep. Amazon/Flipkart occasionally block price reads — those are skipped and retried next sweep.
+      </p>
+    </>
+  );
+}
+
+function PriceChangeConfig({ authFetch }) {
+  const [cfg, setCfg] = useState(null);
+  const [counts, setCounts] = useState(null);
+  const [enabled, setEnabled] = useState(true);
+  const [maxPerDay, setMaxPerDay] = useState(50);
+  const [ttlDays, setTtlDays] = useState(7);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  async function load() {
+    const res = await authFetch('api/admin/price-change');
+    const data = await res.json();
+    if (data.config) {
+      setCfg(data.config);
+      setEnabled(data.config.enabled !== false);
+      setMaxPerDay(data.config.maxPerDay || 50);
+      setTtlDays(data.config.ttlDays || 7);
+    }
+    if (data.counts) setCounts(data.counts);
+  }
+  useEffect(() => { load().catch(() => {}); /* eslint-disable-next-line */ }, []);
+
+  async function save() {
+    setSaving(true); setMsg('');
+    try {
+      const res = await authFetch('api/admin/price-change/save', {
+        method: 'POST',
+        body: JSON.stringify({ enabled, maxPerDay: Number(maxPerDay), ttlDays: Number(ttlDays) }),
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Save failed.');
+      setCfg(data.config);
+      setMsg('Saved ✓');
+      load();
+    } catch (err) {
+      setMsg(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <p className="subtitle">
+        Every product deal posted to your Telegram channels is captured here (price + date).
+        A once-daily check re-reads each stored product and posts a <b>price-drop alert</b> to the
+        channel when its price fell below the stored amount, showing the earlier price and date.
+      </p>
+      {counts && (
+        <div className="statusbox">
+          <div className="meta">
+            Stored products: <strong>{counts.total}</strong> · stored today: <strong>{counts.storedToday}</strong> / {cfg ? cfg.maxPerDay : '—'}
+          </div>
+          <div className="meta">Price-drop alerts sent: <strong>{counts.dropped}</strong></div>
+          {cfg && cfg.lastRunDate && (
+            <div className="meta">Last daily check: {cfg.lastRunDate}</div>
+          )}
+        </div>
+      )}
+      <div style={{ marginTop: 12 }}>
+        <Toggle checked={enabled} onChange={setEnabled} label="Enable price-change tracking" />
+      </div>
+      <label style={{ marginTop: 12, display: 'block' }}>Max products stored per day</label>
+      <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 4 }}>
+        <input
+          className="num"
+          type="number"
+          min="1"
+          max="200"
+          value={maxPerDay}
+          disabled={!enabled}
+          onChange={(e) => setMaxPerDay(e.target.value)}
+          style={{ width: 90 }}
+        />
+        <span className="meta">default 50 (1–200)</span>
+      </div>
+      <label style={{ marginTop: 12, display: 'block' }}>Keep stored products for</label>
+      <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 4 }}>
+        <input
+          className="num"
+          type="number"
+          min="1"
+          max="30"
+          value={ttlDays}
+          disabled={!enabled}
+          onChange={(e) => setTtlDays(e.target.value)}
+          style={{ width: 90 }}
+        />
+        <span className="meta">days (TTL, default 7 · products older than this are dropped)</span>
+      </div>
+      <div className="row" style={{ marginTop: 12 }}>
+        <button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+        {msg && <span className="meta">{msg}</span>}
+      </div>
+      <p className="meta" style={{ marginTop: 12 }}>
+        Storage is automatic — anything posted to your channels (website links, listener/automation posts,
+        real-time ingest, bot replies, custom broadcasts) is captured with its price and date. The daily
+        check runs once per day on the existing background job, and re-posting an already-stored product
+        does not use another daily slot or reset its snapshot.
       </p>
     </>
   );

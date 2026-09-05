@@ -287,7 +287,11 @@ function pinMessage(token, chatId, messageId) {
 // Publish text to configured channels using the stored bot. Best-effort.
 // Inactive channels are always skipped; `autoOnly` further restricts to
 // channels with auto-publish on. `pin` pins the message in each channel.
-async function publishToChannels(text, { autoOnly = false, pin = false } = {}) {
+// `store` (default true) also feeds a delivered message to the price-change
+// tracker so any product link that goes out is captured with its price + date.
+// The daily check passes `store:false` so its own drop alerts never go back
+// into the store.
+async function publishToChannels(text, { autoOnly = false, pin = false, store = true } = {}) {
   const cfg = await getConfig(TELEGRAM_KEY);
   if (!cfg || !cfg.token || !(cfg.channels || []).length) return 0;
   let targets = cfg.channels.filter((c) => c.active !== false); // active only
@@ -306,6 +310,18 @@ async function publishToChannels(text, { autoOnly = false, pin = false } = {}) {
       sent++;
     } catch {
       /* skip a failing channel */
+    }
+  }
+  // Best-effort capture of product deals at the single point every delivery
+  // funnels through (website links, listener/automation posts, real-time ingest,
+  // bot replies, broadcasts). Lazy-required to avoid a module cycle (pricechange
+  // also uses publishToChannels for daily drop alerts).
+  if (store && sent > 0) {
+    try {
+      // eslint-disable-next-line global-require
+      await require('./pricechange').storeFromMessage(text);
+    } catch {
+      /* best-effort — never block a publish */
     }
   }
   return sent;
