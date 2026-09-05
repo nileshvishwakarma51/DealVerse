@@ -71,17 +71,17 @@ jobs:
 
       - name: Run OpenCode
         env:
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          # big-pickle is a free OpenCode Zen model that runs anonymously (no key
+          # needed). Override with a repo variable OPENCODE_MODEL if you ever want a
+          # different model. OPENCODE_API_KEY is honoured too if you set that secret.
           OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           PROMPT: ${{ inputs.prompt }}
         run: |
+          MODEL="${OPENCODE_MODEL:-opencode/big-pickle}"
           GUARD='You are editing the DealVerse repository. Implement ONLY the change described below. Rules: keep edits minimal and focused; you may ONLY modify files under frontend/src, frontend/public, or lambda/ (never lib/, bin/, cdk.json, .github/, or any package.json/lockfile); do not add npm dependencies; do not run destructive or network commands; match the existing code style. Change request: '
           MSG="${GUARD}${PROMPT}"
-          if [ -n "$OPENCODE_MODEL" ]; then
-            opencode run --model "$OPENCODE_MODEL" "$MSG"
-          else
-            opencode run "$MSG"
-          fi
+          opencode run --model "$MODEL" "$MSG"
 
       - name: Guard protected paths
         run: |
