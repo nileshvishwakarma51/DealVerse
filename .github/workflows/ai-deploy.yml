@@ -52,8 +52,16 @@ jobs:
         run: |
           git config user.name "DealVerse AI"
           git config user.email "ai@dealverse.local"
-          git fetch origin main "${{ inputs.branch }}"
-          git checkout -B main origin/main
-          git merge --no-ff "origin/${{ inputs.branch }}" -m "AI deploy: merge ${{ inputs.branch }}"
-          git push origin main
+          # Merge the branch into main and push. If main moved since (concurrent
+          # deploy/revert or a laptop push), rebuild the merge on the latest main
+          # and retry so the push never fails on a stale ref.
+          pushed=0
+          for i in 1 2 3 4 5; do
+            git fetch origin main "${{ inputs.branch }}"
+            git checkout -B main origin/main
+            git merge --no-ff "origin/${{ inputs.branch }}" -m "AI deploy: merge ${{ inputs.branch }}" || { echo "::error::Merge conflict merging ${{ inputs.branch }} into main."; exit 1; }
+            if git push origin main; then pushed=1; break; fi
+            echo "main moved — retrying merge/push ($i)…"; sleep 3
+          done
+          [ "$pushed" = 1 ] || { echo "::error::Could not push the merge after retries."; exit 1; }
           git push origin --delete "${{ inputs.branch }}" || true

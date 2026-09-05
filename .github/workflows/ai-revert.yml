@@ -50,7 +50,15 @@ jobs:
           fi
           echo "Reverting merge commit $MERGE"
           git revert --no-edit -m 1 "$MERGE"
-          git push origin main
+          # Push robustly: if main moved since checkout, rebase our revert on top and retry.
+          pushed=0
+          for i in 1 2 3 4 5; do
+            git fetch origin main
+            git rebase origin/main || { git rebase --abort || true; echo "::error::Rebase conflict while reverting — resolve manually."; exit 1; }
+            if git push origin main; then pushed=1; break; fi
+            echo "main moved — retrying push ($i)…"; sleep 3
+          done
+          [ "$pushed" = 1 ] || { echo "::error::Could not push the revert after retries."; exit 1; }
 
       - name: Install dependencies
         run: |
