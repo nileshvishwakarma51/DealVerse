@@ -16,6 +16,7 @@ const KEY = 'aidev';
 const API = 'https://api.github.com';
 const DEV_WORKFLOW = 'ai-develop.yml';
 const DEPLOY_WORKFLOW = 'ai-deploy.yml';
+const REVERT_WORKFLOW = 'ai-revert.yml';
 const DEFAULT_OWNER = 'nileshvishwakarma51';
 const DEFAULT_REPO = 'DealVerse';
 const TIMEOUT_MS = 10000;
@@ -147,67 +148,49 @@ async function findRun(c, workflowFile, sinceIso, claimedIds) {
   return match || null;
 }
 
+// Track one workflow-run "slot" (develop / deploy / revert) on a task: attach its
+// run id once the run appears, then keep its status fresh. Returns true if changed.
+async function trackSlot(c, slot, workflowFile, claimed, onDone) {
+  if (!slot || slot.status === 'completed') return false;
+  try {
+    if (!slot.runId) {
+      const run = await findRun(c, workflowFile, slot.dispatchedAt, claimed);
+      if (!run) return false;
+      slot.runId = run.id;
+      claimed.add(run.id);
+      slot.status = run.status;
+      slot.conclusion = run.conclusion;
+      slot.url = run.html_url;
+      return true;
+    }
+    const run = await gh(c, 'GET', `/repos/${c.owner}/${c.repo}/actions/runs/${slot.runId}`);
+    if (run && (run.status !== slot.status || run.conclusion !== slot.conclusion)) {
+      slot.status = run.status;
+      slot.conclusion = run.conclusion;
+      slot.url = run.html_url;
+      if (run.status === 'completed' && run.conclusion === 'success' && onDone) onDone();
+      return true;
+    }
+  } catch {
+    /* transient — try next refresh */
+  }
+  return false;
+}
+
 // Refresh live status of any non-terminal task from the GitHub Actions API.
 async function refresh(c) {
   const claimedDev = new Set(c.tasks.map((t) => t.develop && t.develop.runId).filter(Boolean));
   const claimedDep = new Set(c.tasks.map((t) => t.deploy && t.deploy.runId).filter(Boolean));
+  const claimedRev = new Set(c.tasks.map((t) => t.revert && t.revert.runId).filter(Boolean));
   let changed = false;
-
   for (const t of c.tasks) {
     if (t.discarded) continue;
-    // develop phase
-    if (t.develop && t.develop.status !== 'completed') {
-      try {
-        if (!t.develop.runId) {
-          const run = await findRun(c, DEV_WORKFLOW, t.develop.dispatchedAt, claimedDev);
-          if (run) {
-            t.develop.runId = run.id;
-            claimedDev.add(run.id);
-            t.develop.status = run.status;
-            t.develop.conclusion = run.conclusion;
-            t.develop.url = run.html_url;
-            changed = true;
-          }
-        } else {
-          const run = await gh(c, 'GET', `/repos/${c.owner}/${c.repo}/actions/runs/${t.develop.runId}`);
-          if (run && (run.status !== t.develop.status || run.conclusion !== t.develop.conclusion)) {
-            t.develop.status = run.status;
-            t.develop.conclusion = run.conclusion;
-            t.develop.url = run.html_url;
-            changed = true;
-          }
-        }
-      } catch {
-        /* transient — try next refresh */
-      }
-    }
-    // deploy phase
-    if (t.deploy && t.deploy.status !== 'completed') {
-      try {
-        if (!t.deploy.runId) {
-          const run = await findRun(c, DEPLOY_WORKFLOW, t.deploy.dispatchedAt, claimedDep);
-          if (run) {
-            t.deploy.runId = run.id;
-            claimedDep.add(run.id);
-            t.deploy.status = run.status;
-            t.deploy.conclusion = run.conclusion;
-            t.deploy.url = run.html_url;
-            changed = true;
-          }
-        } else {
-          const run = await gh(c, 'GET', `/repos/${c.owner}/${c.repo}/actions/runs/${t.deploy.runId}`);
-          if (run && (run.status !== t.deploy.status || run.conclusion !== t.deploy.conclusion)) {
-            t.deploy.status = run.status;
-            t.deploy.conclusion = run.conclusion;
-            t.deploy.url = run.html_url;
-            if (run.status === 'completed' && run.conclusion === 'success') t.deployed = true;
-            changed = true;
-          }
-        }
-      } catch {
-        /* transient */
-      }
-    }
+    // eslint-disable-next-line no-await-in-loop
+    if (await trackSlot(c, t.develop, DEV_WORKFLOW, claimedDev)) changed = true;
+    // eslint-disable-next-line no-await-in-loop
+    if (await trackSlot(c, t.deploy, DEPLOY_WORKFLOW, claimedDep, () => { t.deployed = true; })) changed = true;
+    // eslint-disable-next-line no-await-in-loop
+    if (await trackSlot(c, t.revert, REVERT_WORKFLOW, claimedRev, () => { t.reverted = true; })) changed = true;
   }
   if (changed) {
     c.tasks.forEach((t) => { t.updatedAt = new Date().toISOString(); });
@@ -219,6 +202,10 @@ async function refresh(c) {
 // A single human-facing status string for the UI.
 function uiStatus(t) {
   if (t.discarded) return 'discarded';
+  if (t.revert) {
+    if (t.revert.status !== 'completed') return 'reverting';
+    return t.revert.conclusion === 'success' ? 'reverted' : 'revert-failed';
+  }
   if (t.deploy) {
     if (t.deploy.status !== 'completed') return 'deploying';
     return t.deploy.conclusion === 'success' ? 'deployed' : 'deploy-failed';
@@ -239,6 +226,7 @@ function viewTask(c, t) {
     updatedAt: t.updatedAt,
     developUrl: t.develop && t.develop.url,
     deployUrl: t.deploy && t.deploy.url,
+    revertUrl: t.revert && t.revert.url,
     diffUrl: `https://github.com/${c.owner}/${c.repo}/compare/main...${encodeURIComponent(t.branch)}`,
   };
 }
@@ -271,6 +259,23 @@ async function deployTask(id) {
   return viewTask(c, t);
 }
 
+async function revertTask(id) {
+  const c = await load();
+  const t = c.tasks.find((x) => x.id === id);
+  if (!t) throw new ApiError(404, 'Task not found.');
+  if (!t.deployed) throw new ApiError(400, 'Only a deployed change can be reverted.');
+  if (t.revert && t.revert.status !== 'completed') throw new ApiError(400, 'A revert is already in progress.');
+  const now = new Date().toISOString();
+  await gh(c, 'POST', `/repos/${c.owner}/${c.repo}/actions/workflows/${REVERT_WORKFLOW}/dispatches`, {
+    ref: 'main',
+    inputs: { branch: t.branch },
+  });
+  t.revert = { dispatchedAt: now, runId: null, status: 'queued', conclusion: null, url: null };
+  t.updatedAt = now;
+  await save(c);
+  return viewTask(c, t);
+}
+
 async function discardTask(id) {
   const c = await load();
   const t = c.tasks.find((x) => x.id === id);
@@ -287,4 +292,4 @@ async function discardTask(id) {
   return viewTask(c, t);
 }
 
-module.exports = { getConfig, setPat, createTask, listTasks, deployTask, discardTask };
+module.exports = { getConfig, setPat, createTask, listTasks, deployTask, revertTask, discardTask };

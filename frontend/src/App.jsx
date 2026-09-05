@@ -884,6 +884,9 @@ const AIDEV_STATUS = {
   deploying: ['Deploying…', 'badge'],
   deployed: ['Deployed ✓', 'badge ok'],
   'deploy-failed': ['Deploy failed ✗', 'badge off'],
+  reverting: ['Reverting…', 'badge'],
+  reverted: ['Reverted ↩', 'badge'],
+  'revert-failed': ['Revert failed ✗', 'badge off'],
   discarded: ['Discarded', 'badge'],
 };
 
@@ -935,7 +938,10 @@ function AIDevConfig({ authFetch }) {
   }
 
   async function act(id, kind) {
-    const verb = kind === 'deploy' ? 'Deploy this change to production now?' : 'Discard this change and delete its branch?';
+    const verb =
+      kind === 'deploy' ? 'Deploy this change to production now?'
+      : kind === 'revert' ? 'Revert this deployed change and redeploy production?'
+      : 'Discard this change and delete its branch?';
     if (!window.confirm(verb)) return;
     setBusy(true); setMsg('');
     try {
@@ -999,13 +1005,17 @@ function AIDevConfig({ authFetch }) {
                 {' · '}<a href={t.diffUrl} target="_blank" rel="noreferrer">view diff</a>
                 {t.developUrl && <> · <a href={t.developUrl} target="_blank" rel="noreferrer">run log</a></>}
                 {t.deployUrl && <> · <a href={t.deployUrl} target="_blank" rel="noreferrer">deploy log</a></>}
+                {t.revertUrl && <> · <a href={t.revertUrl} target="_blank" rel="noreferrer">revert log</a></>}
               </div>
             </span>
             <span className="rowactions">
               {(t.status === 'ready' || t.status === 'deploy-failed') && (
                 <button onClick={() => act(t.id, 'deploy')} disabled={busy}>{t.status === 'deploy-failed' ? 'Retry deploy' : 'Deploy'}</button>
               )}
-              {!['discarded', 'deployed', 'deploying'].includes(t.status) && (
+              {(t.status === 'deployed' || t.status === 'revert-failed') && (
+                <button onClick={() => act(t.id, 'revert')} disabled={busy}>{t.status === 'revert-failed' ? 'Retry revert' : 'Revert change'}</button>
+              )}
+              {!['discarded', 'deployed', 'deploying', 'reverting', 'reverted'].includes(t.status) && (
                 <button className="link" onClick={() => act(t.id, 'discard')} disabled={busy}>Discard</button>
               )}
             </span>

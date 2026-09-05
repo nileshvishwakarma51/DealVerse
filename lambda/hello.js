@@ -531,6 +531,12 @@ exports.handler = async (event) => {
       const task = await aidev.deployTask(id);
       return respond(200, { success: true, task });
     }
+    if (method === 'POST' && reqPath.endsWith('/api/admin/ai-dev/tasks/revert')) {
+      if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
+      const { id } = parseBody(event);
+      const task = await aidev.revertTask(id);
+      return respond(200, { success: true, task });
+    }
     if (method === 'POST' && reqPath.endsWith('/api/admin/ai-dev/tasks/discard')) {
       if (!checkBearer(event)) return respond(401, { success: false, error: 'Unauthorized.' });
       const { id } = parseBody(event);

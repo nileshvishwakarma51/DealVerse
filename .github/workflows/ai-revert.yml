@@ -1,0 +1,61 @@
+name: AI Revert
+
+# Triggered by the admin panel "Revert change" button on a deployed task. Finds the
+# deploy merge commit for the task's branch, reverts it on main, pushes, and
+# redeploys — undoing exactly that change and nothing else.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: The original ai/* branch whose deployed change should be reverted
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ai-deploy
+  cancel-in-progress: false
+
+jobs:
+  revert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Revert the deployed change on main
+        run: |
+          git config user.name "DealVerse AI"
+          git config user.email "ai@dealverse.local"
+          MERGE=$(git log --grep="AI deploy: merge ${{ inputs.branch }}" --format=%H -1)
+          if [ -z "$MERGE" ]; then
+            echo "::error::Could not find the deploy merge commit for ${{ inputs.branch }}."; exit 1
+          fi
+          echo "Reverting merge commit $MERGE"
+          git revert --no-edit -m 1 "$MERGE"
+          git push origin main
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix frontend ci
+
+      - name: Deploy reverted main
+        run: npm run deploy
