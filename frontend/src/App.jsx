@@ -470,7 +470,7 @@ function AdminPanel({ token, onUnauthorized, onLogout, onHome }) {
     ['automation', 'Automation', IC.clock],
     ['broadcasts', 'Custom messages', IC.mega],
     ['import-users', 'Import users', IC.users],
-    ['price-tracker', 'Price Tracker', IC.tag],
+    ['price-tracker', 'Price-tracker', IC.tag],
     ['ai-dev', 'AI Developer', IC.code],
     ['audit', 'Audit log', IC.list],
   ];
